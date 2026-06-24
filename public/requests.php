@@ -9,11 +9,16 @@
 
 $config = require __DIR__ . '/../app/bootstrap.php';
 cors($config['allowed_origins']);
+security_headers();
 
 $method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
 if ($method !== 'POST') {
     json_out(['error' => 'Method not allowed. Use POST.'], 405);
 }
+
+// CSRF hardening: only our own site (allowed Origin) sending JSON may post.
+require_allowed_origin($config['allowed_origins']);
+require_json();
 
 // --- Limits & allowed values ---
 const RL_MAX_PER_HOUR = 8;   // max submissions per IP per hour
@@ -75,8 +80,13 @@ try {
     $phone       = field($body, 'phone', 60);
     $org         = field($body, 'org', 160);
 
-    // --- Validation ---
+    // --- Validation (server is the source of truth; mirrors the frontend) ---
     $errors = [];
+    $set = function (string $k, ?string $msg) use (&$errors): void {
+        if ($msg !== null) {
+            $errors[$k] = $msg;
+        }
+    };
 
     $isCapstone = ($path === 'capstone');
     if ($path !== 'capstone' && $path !== 'business') {
@@ -87,31 +97,30 @@ try {
         if (!in_array($systemType, SYSTEM_TYPES, true)) {
             $errors['systemType'] = 'Please choose a system type.';
         }
-        if ($projectTitle === '') {
-            $errors['projectTitle'] = 'Please enter a project title.';
-        }
+        $set('projectTitle', ckx_validate_text($projectTitle, 'your project title', 3));
     } elseif ($path === 'business') {
         if (!in_array($service, SERVICES, true)) {
             $errors['service'] = 'Please choose what you need.';
         }
-        if ($businessName === '') {
-            $errors['businessName'] = 'Please enter your business name.';
+        $set('businessName', ckx_validate_text($businessName, 'your business name', 2));
+        if ($industry !== '') {
+            $set('industry', ckx_validate_text($industry, 'industry', 2));
         }
     }
 
-    if (mb_strlen($description) < 4) {
-        $errors['description'] = 'Please tell us a little about the project.';
-    }
+    $set('description', ckx_validate_description($description));
+
     if (!in_array($budget, BUDGETS, true)) {
         $errors['budget'] = 'Please select a budget.';
-    } elseif ($budget === 'custom' && $customBudget === '') {
-        $errors['customBudget'] = 'Please enter your budget.';
+    } elseif ($budget === 'custom') {
+        $set('customBudget', ckx_validate_custom_budget($customBudget));
     }
-    if ($name === '') {
-        $errors['name'] = 'Please enter your name.';
-    }
-    if ($email === '' || !filter_var($email, FILTER_VALIDATE_EMAIL)) {
-        $errors['email'] = 'Please enter a valid email.';
+
+    $set('name', ckx_validate_name($name));
+    $set('email', ckx_validate_email($email));
+    $set('phone', ckx_validate_contact($phone));
+    if ($org !== '') {
+        $set('org', ckx_validate_text($org, $isCapstone ? 'school' : 'company', 2));
     }
 
     if ($errors) {

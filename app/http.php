@@ -21,6 +21,39 @@ function cors(array $allowed): void
     }
 }
 
+// Baseline security headers for every response.
+function security_headers(): void
+{
+    header_remove('X-Powered-By');
+    header('X-Content-Type-Options: nosniff');
+    header('X-Frame-Options: DENY');
+    header('Referrer-Policy: no-referrer');
+    header('Cross-Origin-Opener-Policy: same-origin');
+}
+
+// Require a JSON request body. A cross-site HTML <form> cannot send
+// "application/json" without a CORS preflight, so this blocks basic CSRF posts.
+function require_json(): void
+{
+    $ct = $_SERVER['CONTENT_TYPE'] ?? '';
+    if (stripos($ct, 'application/json') === false) {
+        json_out(['error' => 'Unsupported content type. Send JSON.'], 415);
+    }
+}
+
+// For state-changing requests, require a known browser Origin (CSRF hardening).
+// Skipped when the allow-list is "*" (development).
+function require_allowed_origin(array $allowed): void
+{
+    if (in_array('*', $allowed, true)) {
+        return;
+    }
+    $origin = $_SERVER['HTTP_ORIGIN'] ?? '';
+    if ($origin === '' || !in_array($origin, $allowed, true)) {
+        json_out(['error' => 'Request blocked.'], 403);
+    }
+}
+
 // Send a JSON response and stop.
 function json_out($data, int $code = 200): void
 {
@@ -31,8 +64,16 @@ function json_out($data, int $code = 200): void
 }
 
 // Decode the JSON request body into an array (empty array if missing/invalid).
-function read_json_body(): array
+// Rejects oversized bodies to avoid memory abuse.
+function read_json_body(int $maxBytes = 65536): array
 {
-    $data = json_decode(file_get_contents('php://input'), true);
+    if ((int) ($_SERVER['CONTENT_LENGTH'] ?? 0) > $maxBytes) {
+        json_out(['error' => 'Request too large.'], 413);
+    }
+    $raw = file_get_contents('php://input', false, null, 0, $maxBytes + 1);
+    if ($raw !== false && strlen($raw) > $maxBytes) {
+        json_out(['error' => 'Request too large.'], 413);
+    }
+    $data = json_decode((string) $raw, true);
     return is_array($data) ? $data : [];
 }

@@ -8,5 +8,6 @@ load_env(dirname(__DIR__) . '/.env'); // .env lives at the project root, outside
 require __DIR__ . '/http.php';
 require __DIR__ . '/db.php';
 require __DIR__ . '/mailer.php';
+require __DIR__ . '/validation.php';
 
 return require __DIR__ . '/config.php';

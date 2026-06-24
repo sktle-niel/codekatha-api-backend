@@ -1,0 +1,9 @@
+# Web root for the API subdomain (e.g. api.codekathax.com).
+
+# No directory listings.
+Options -Indexes
+
+# Block access to any dotfiles (.env, .htaccess) that might end up here.
+<FilesMatch "^\.">
+    Require all denied
+</FilesMatch>

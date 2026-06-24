@@ -1,0 +1,207 @@
+<?php
+// Project requests API
+//   POST /requests.php  -> create a project request (JSON body) from the
+//                          website's "Start a project" form. The record is
+//                          saved to MySQL, then an email is sent to the owner.
+//
+// Anti-spam: hidden honeypot field ("hp") + per-IP rate limiting. Visitor IPs
+// are stored only as a salted hash.
+
+$config = require __DIR__ . '/../app/bootstrap.php';
+cors($config['allowed_origins']);
+
+$method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
+if ($method !== 'POST') {
+    json_out(['error' => 'Method not allowed. Use POST.'], 405);
+}
+
+// --- Limits & allowed values ---
+const RL_MAX_PER_HOUR = 8;   // max submissions per IP per hour
+const RL_MIN_SECONDS  = 20;  // minimum gap between submissions from one IP
+
+const SYSTEM_TYPES = ['website', 'desktop', 'mobile'];
+const SERVICES     = ['business-website', 'landing-page', 'web-system', 'inventory', 'booking', 'other'];
+const BUDGETS      = ['3-5k', '5-10k', '10-20k', '20-50k', 'custom'];
+
+function client_ip(): string
+{
+    return $_SERVER['REMOTE_ADDR'] ?? '';
+}
+
+function clean_text(string $s): string
+{
+    return preg_replace('/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/u', '', $s);
+}
+
+function field(array $body, string $key, int $max = 255): string
+{
+    return mb_substr(clean_text(trim((string) ($body[$key] ?? ''))), 0, $max);
+}
+
+// Public reference, e.g. "CKX-7G2K9Q".
+function make_reference(): string
+{
+    $alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // no easily-confused chars
+    $out = '';
+    $bytes = random_bytes(6);
+    for ($i = 0; $i < 6; $i++) {
+        $out .= $alphabet[ord($bytes[$i]) % 31];
+    }
+    return 'CKX-' . $out;
+}
+
+try {
+    $body = read_json_body();
+
+    // Honeypot: a hidden field real users never fill. If present, treat as spam
+    // but answer 200 so bots don't learn anything.
+    if (trim((string) ($body['hp'] ?? '')) !== '') {
+        json_out(['ok' => true, 'reference' => make_reference(), 'emailed' => false], 200);
+    }
+
+    $path        = field($body, 'path', 20);
+    $systemType  = field($body, 'systemType', 40);
+    $service     = field($body, 'service', 40);
+    $projectTitle = field($body, 'projectTitle', 160);
+    $businessName = field($body, 'businessName', 160);
+    $industry    = field($body, 'industry', 120);
+    $hasExisting = field($body, 'hasExisting', 10);
+    $description = mb_substr(clean_text(trim((string) ($body['description'] ?? ''))), 0, 4000);
+    $deadline    = field($body, 'deadline', 120);
+    $budget      = field($body, 'budget', 40);
+    $customBudget = field($body, 'customBudget', 120);
+    $name        = field($body, 'name', 120);
+    $email       = field($body, 'email', 160);
+    $phone       = field($body, 'phone', 60);
+    $org         = field($body, 'org', 160);
+
+    // --- Validation ---
+    $errors = [];
+
+    $isCapstone = ($path === 'capstone');
+    if ($path !== 'capstone' && $path !== 'business') {
+        $errors['path'] = 'Please choose what this project is for.';
+    }
+
+    if ($isCapstone) {
+        if (!in_array($systemType, SYSTEM_TYPES, true)) {
+            $errors['systemType'] = 'Please choose a system type.';
+        }
+        if ($projectTitle === '') {
+            $errors['projectTitle'] = 'Please enter a project title.';
+        }
+    } elseif ($path === 'business') {
+        if (!in_array($service, SERVICES, true)) {
+            $errors['service'] = 'Please choose what you need.';
+        }
+        if ($businessName === '') {
+            $errors['businessName'] = 'Please enter your business name.';
+        }
+    }
+
+    if (mb_strlen($description) < 4) {
+        $errors['description'] = 'Please tell us a little about the project.';
+    }
+    if (!in_array($budget, BUDGETS, true)) {
+        $errors['budget'] = 'Please select a budget.';
+    } elseif ($budget === 'custom' && $customBudget === '') {
+        $errors['customBudget'] = 'Please enter your budget.';
+    }
+    if ($name === '') {
+        $errors['name'] = 'Please enter your name.';
+    }
+    if ($email === '' || !filter_var($email, FILTER_VALIDATE_EMAIL)) {
+        $errors['email'] = 'Please enter a valid email.';
+    }
+
+    if ($errors) {
+        json_out(['errors' => $errors], 422);
+    }
+
+    $pdo = db();
+
+    // --- Per-IP rate limiting (IP stored only as a salted hash) ---
+    $ipHash = hash('sha256', client_ip() . '|' . $config['ip_salt']);
+    $rl = $pdo->prepare(
+        "SELECT
+            COALESCE(SUM(created_at > (NOW() - INTERVAL 1 HOUR)), 0) AS hourly,
+            COALESCE(SUM(created_at > (NOW() - INTERVAL " . RL_MIN_SECONDS . " SECOND)), 0) AS recent
+         FROM project_requests WHERE ip_hash = ?"
+    );
+    $rl->execute([$ipHash]);
+    $counts = $rl->fetch();
+    if ((int) $counts['recent'] > 0) {
+        json_out(['error' => 'Please wait a moment before sending another request.'], 429);
+    }
+    if ((int) $counts['hourly'] >= RL_MAX_PER_HOUR) {
+        json_out(['error' => 'You have sent several requests already. Please try again later.'], 429);
+    }
+
+    // --- Insert (retry once on the very unlikely reference collision) ---
+    $reference = make_reference();
+    $ua = mb_substr((string) ($_SERVER['HTTP_USER_AGENT'] ?? ''), 0, 255);
+
+    for ($try = 0; ; $try++) {
+        try {
+            $stmt = $pdo->prepare(
+                "INSERT INTO project_requests
+                    (reference, path, system_type, service, project_title, business_name,
+                     industry, has_existing, description, deadline, budget, custom_budget,
+                     name, email, phone, org, ip_hash, user_agent)
+                 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
+            );
+            $stmt->execute([
+                $reference,
+                $path,
+                $isCapstone ? ($systemType ?: null) : null,
+                $path === 'business' ? ($service ?: null) : null,
+                $projectTitle ?: null,
+                $businessName ?: null,
+                $industry ?: null,
+                $hasExisting ?: null,
+                $description,
+                $deadline ?: null,
+                $budget ?: null,
+                $budget === 'custom' ? ($customBudget ?: null) : null,
+                $name,
+                $email,
+                $phone ?: null,
+                $org ?: null,
+                $ipHash,
+                $ua,
+            ]);
+            break;
+        } catch (PDOException $e) {
+            if ($e->getCode() === '23000' && $try < 3) {
+                $reference = make_reference();
+                continue;
+            }
+            throw $e;
+        }
+    }
+
+    // --- Email the owner (best-effort; data is already saved) ---
+    $emailed = send_request_email($config['mail'], [
+        'reference'     => $reference,
+        'path'          => $path,
+        'system_type'   => $systemType,
+        'service'       => $service,
+        'project_title' => $projectTitle,
+        'business_name' => $businessName,
+        'industry'      => $industry,
+        'has_existing'  => $hasExisting,
+        'description'   => $description,
+        'deadline'      => $deadline,
+        'budget'        => $budget,
+        'custom_budget' => $customBudget,
+        'name'          => $name,
+        'email'         => $email,
+        'phone'         => $phone,
+        'org'           => $org,
+    ]);
+
+    json_out(['ok' => true, 'reference' => $reference, 'emailed' => $emailed], 201);
+} catch (Throwable $e) {
+    error_log('CKX requests error: ' . $e->getMessage());
+    json_out(['error' => 'Could not save your request. Please try again shortly.'], 500);
+}

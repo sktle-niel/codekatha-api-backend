@@ -9,6 +9,22 @@ require __DIR__ . '/PHPMailer/Exception.php';
 require __DIR__ . '/PHPMailer/PHPMailer.php';
 require __DIR__ . '/PHPMailer/SMTP.php';
 
+// A PHPMailer instance pre-configured for SMTP, with the brand "From" set.
+function ckx_smtp_mailer(array $mail): PHPMailer
+{
+    $mailer = new PHPMailer(true);
+    $mailer->isSMTP();
+    $mailer->Host       = $mail['host'];
+    $mailer->SMTPAuth   = true;
+    $mailer->Username   = $mail['user'];
+    $mailer->Password   = $mail['pass'];
+    $mailer->SMTPSecure = $mail['secure'] === 'tls' ? 'tls' : 'ssl';
+    $mailer->Port       = $mail['port'];
+    $mailer->CharSet    = 'UTF-8';
+    $mailer->setFrom($mail['from'], $mail['from_name']);
+    return $mailer;
+}
+
 function budget_label(string $id, string $custom): string
 {
     $map = [
@@ -217,18 +233,8 @@ function send_request_email(array $mail, array $r): bool
 
     $isCapstone = ($r['path'] === 'capstone');
 
-    $mailer = new PHPMailer(true);
+    $mailer = ckx_smtp_mailer($mail);
     try {
-        $mailer->isSMTP();
-        $mailer->Host       = $mail['host'];
-        $mailer->SMTPAuth   = true;
-        $mailer->Username   = $mail['user'];
-        $mailer->Password   = $mail['pass'];
-        $mailer->SMTPSecure = $mail['secure'] === 'tls' ? 'tls' : 'ssl';
-        $mailer->Port       = $mail['port'];
-        $mailer->CharSet    = 'UTF-8';
-
-        $mailer->setFrom($mail['from'], $mail['from_name']);
         $mailer->addAddress($mail['to']);
         if (!empty($r['email'])) {
             $mailer->addReplyTo($r['email'], $r['name'] !== '' ? $r['name'] : $r['email']);
@@ -244,6 +250,112 @@ function send_request_email(array $mail, array $r): bool
         return true;
     } catch (Throwable $e) {
         error_log('CKX mail failed: ' . $e->getMessage());
+        return false;
+    }
+}
+
+// Build the client-facing confirmation email (thank-you + reference).
+function build_client_html(array $r): string
+{
+    $isCapstone = ($r['path'] === 'capstone');
+    $firstName  = htmlspecialchars(strtok((string) $r['name'], ' ') ?: 'there');
+    $ref        = htmlspecialchars((string) $r['reference']);
+
+    $summary = ['For' => $isCapstone ? 'Capstone / Thesis' : 'Business'];
+    if ($isCapstone) {
+        $summary['System'] = system_label((string) $r['system_type']);
+        if (!empty($r['project_title'])) $summary['Project'] = $r['project_title'];
+    } else {
+        $summary['Service'] = service_label((string) $r['service']);
+        if (!empty($r['business_name'])) $summary['Business'] = $r['business_name'];
+    }
+    $summary['Budget'] = budget_label((string) $r['budget'], (string) $r['custom_budget']);
+
+    return '
+<div style="background:#f4f4f2;padding:28px 12px;font-family:Arial,Helvetica,sans-serif;">
+  <table role="presentation" align="center" width="600" cellpadding="0" cellspacing="0"
+         style="max-width:600px;width:100%;background:#ffffff;border:1px solid #eceae5;border-radius:14px;border-collapse:separate;overflow:hidden;">
+    <tr>
+      <td style="background:#18181b;padding:20px 28px;">
+        <span style="font-size:17px;font-weight:800;letter-spacing:-0.3px;color:#ffffff;">CODEKATHA<span style="color:#c2f000;">X</span></span>
+      </td>
+    </tr>
+    <tr>
+      <td style="padding:28px 28px 0 28px;">
+        <h1 style="margin:0 0 10px;color:#18181b;font-size:22px;">Thank you, ' . $firstName . '!</h1>
+        <p style="margin:0;color:#3f3f46;font-size:15px;line-height:1.7;">
+          We have received your project request. Our team will review it and
+          <strong>send you a message as soon as possible</strong> &mdash; usually within one business day.
+        </p>
+      </td>
+    </tr>
+    <tr>
+      <td style="padding:20px 28px 0 28px;">
+        <table role="presentation" width="100%" cellpadding="0" cellspacing="0"
+               style="background:#f7f6f3;border:1px solid #eceae5;border-radius:10px;">
+          <tr><td style="padding:14px 18px;">
+            <span style="color:#6f6f6a;font-size:12px;">Your reference number</span><br>
+            <span style="color:#18181b;font-size:20px;font-weight:800;letter-spacing:0.5px;">' . $ref . '</span>
+          </td></tr>
+        </table>
+        <p style="margin:10px 2px 0;color:#9a9a96;font-size:12px;">Please keep this reference in case you need to follow up.</p>
+      </td>
+    </tr>
+    <tr>
+      <td style="padding:22px 28px 0 28px;">
+        <p style="margin:0 0 6px;color:#9a9a96;font-size:11px;letter-spacing:1.5px;text-transform:uppercase;">Summary of your request</p>
+        ' . render_rows($summary) . '
+      </td>
+    </tr>
+    <tr>
+      <td style="padding:22px 28px 28px 28px;">
+        <p style="margin:0;color:#3f3f46;font-size:14px;line-height:1.7;">
+          Need to add or change something? Just reply to this email and it will reach us directly.
+        </p>
+        <p style="margin:16px 0 0;color:#18181b;font-size:14px;">&mdash; The CODEKATHAX Team</p>
+      </td>
+    </tr>
+    <tr>
+      <td style="background:#f7f6f3;border-top:1px solid #eceae5;padding:14px 28px;color:#9a9a96;font-size:11px;">
+        CODEKATHAX &middot; Web &amp; App Services &middot; This is an automated confirmation.
+      </td>
+    </tr>
+  </table>
+</div>';
+}
+
+function send_client_confirmation(array $mail, array $r): bool
+{
+    if (empty($mail['enabled']) || $mail['user'] === '' || $mail['pass'] === '') {
+        return false;
+    }
+    if (empty($r['email']) || !filter_var($r['email'], FILTER_VALIDATE_EMAIL)) {
+        return false;
+    }
+
+    $firstName = strtok((string) $r['name'], ' ') ?: 'there';
+    $text = "Thank you, $firstName!\n\n"
+        . "We have received your project request and will send you a message as soon as possible "
+        . "(usually within one business day).\n\n"
+        . "Your reference number: " . $r['reference'] . "\n\n"
+        . "Need to add something? Just reply to this email.\n\n"
+        . "— The CODEKATHAX Team";
+
+    $mailer = ckx_smtp_mailer($mail);
+    try {
+        $mailer->addAddress($r['email'], $r['name'] !== '' ? $r['name'] : $r['email']);
+        // Replies from the client land in the owner inbox.
+        $mailer->addReplyTo($mail['to'], $mail['from_name']);
+
+        $mailer->Subject = 'We received your request — ' . $r['reference'] . ' · CODEKATHAX';
+        $mailer->isHTML(true);
+        $mailer->Body    = build_client_html($r);
+        $mailer->AltBody = $text;
+
+        $mailer->send();
+        return true;
+    } catch (Throwable $e) {
+        error_log('CKX client confirm failed: ' . $e->getMessage());
         return false;
     }
 }

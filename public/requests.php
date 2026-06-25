@@ -189,8 +189,8 @@ try {
         }
     }
 
-    // --- Email the owner (best-effort; data is already saved) ---
-    $emailed = send_request_email($config['mail'], [
+    // --- Notify (best-effort; data is already saved) ---
+    $payload = [
         'reference'     => $reference,
         'path'          => $path,
         'system_type'   => $systemType,
@@ -207,7 +207,9 @@ try {
         'email'         => $email,
         'phone'         => $phone,
         'org'           => $org,
-    ]);
+    ];
+    $emailed = send_request_email($config['mail'], $payload);   // -> owner inbox
+    send_client_confirmation($config['mail'], $payload);        // -> client's email
 
     json_out(['ok' => true, 'reference' => $reference, 'emailed' => $emailed], 201);
 } catch (Throwable $e) {

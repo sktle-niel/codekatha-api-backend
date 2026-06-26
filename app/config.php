@@ -38,4 +38,16 @@ return [
         'from_name' => getenv('MAIL_FROM_NAME') ?: 'CODEKATHAX Website',
         'to'        => getenv('MAIL_TO') ?: 'niel.ladica07@gmail.com',
     ],
+
+    // Agent commission share (0.30 = 30% to the agent, 70% to the owner).
+    'commission_rate' => (float) (getenv('COMMISSION_RATE') ?: 0.30),
+
+    // Public site URL (used to build agent links in emails).
+    'site_url' => rtrim(getenv('SITE_URL') ?: 'https://codekathaxinquires.vercel.app', '/'),
+
+    // Single owner/admin login for the admin dashboard.
+    'admin' => [
+        'email'         => getenv('ADMIN_EMAIL') ?: 'niel.ladica07@gmail.com',
+        'password_hash' => getenv('ADMIN_PASSWORD_HASH') ?: '',
+    ],
 ];

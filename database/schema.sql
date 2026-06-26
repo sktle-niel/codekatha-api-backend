@@ -1,17 +1,38 @@
 -- ============================================================
---  CODEKATHAX — project requests schema (import-ready for Hostinger)
+--  CODEKATHAX — full schema (import-ready for Hostinger)
 --
 --  On Hostinger the database is already created for you in hPanel
 --  (prefixed name like u123456_codekathax), so this file does NOT run
---  CREATE DATABASE / USE. Select your database in phpMyAdmin and import
---  this file to create the table.
+--  CREATE DATABASE / USE. Select your database in phpMyAdmin and import.
 --
---    reference : public reference shown to the client (e.g. CKX-7G2K9Q)
---    path      : 'capstone' or 'business' (which form was used)
---    ip_hash   : salted SHA-256 of the submitter IP, used for rate limiting
---    status    : workflow flag for you (new / read / archived)
+--  For an EXISTING database already running the older schema, run the
+--  migration in database/migrations/ instead (it only adds the new bits).
 -- ============================================================
 
+-- Referral agents / partners who bring in clients.
+CREATE TABLE IF NOT EXISTS `agents` (
+  `id`            BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `name`          VARCHAR(120)    NOT NULL,
+  `email`         VARCHAR(160)    NOT NULL,
+  `phone`         VARCHAR(60)     DEFAULT NULL,
+  `password_hash` VARCHAR(255)    NOT NULL,
+  `payout_method` VARCHAR(40)     DEFAULT NULL,   -- e.g. GCash, Maya, Bank
+  `payout_number` VARCHAR(120)    DEFAULT NULL,   -- account / number for the 30%
+  `ref_token`     VARCHAR(20)     NOT NULL,        -- referral code in their link
+  `status`        ENUM('pending','approved','suspended') NOT NULL DEFAULT 'pending',
+  `ip_hash`       CHAR(64)        DEFAULT NULL,
+  `created_at`    TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `approved_at`   TIMESTAMP       NULL DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uq_agent_email` (`email`),
+  UNIQUE KEY `uq_ref_token` (`ref_token`),
+  KEY `idx_agent_ip` (`ip_hash`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- Project requests submitted through the website form.
+--   agent_id / ref_token : set when the client came from an agent's link
+--   deal_amount          : final agreed price (you set it when a deal closes)
+--   deal_status          : lead (new) / won (closed) / lost
 CREATE TABLE IF NOT EXISTS `project_requests` (
   `id`            BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
   `reference`     VARCHAR(20)     NOT NULL,
@@ -30,6 +51,10 @@ CREATE TABLE IF NOT EXISTS `project_requests` (
   `email`         VARCHAR(160)    NOT NULL,
   `phone`         VARCHAR(60)     DEFAULT NULL,
   `org`           VARCHAR(160)    DEFAULT NULL,
+  `agent_id`      BIGINT UNSIGNED DEFAULT NULL,
+  `ref_token`     VARCHAR(20)     DEFAULT NULL,
+  `deal_amount`   DECIMAL(10,2)   DEFAULT NULL,
+  `deal_status`   ENUM('lead','won','lost') NOT NULL DEFAULT 'lead',
   `status`        ENUM('new','read','archived') NOT NULL DEFAULT 'new',
   `ip_hash`       CHAR(64)        DEFAULT NULL,
   `user_agent`    VARCHAR(255)    DEFAULT NULL,
@@ -37,8 +62,31 @@ CREATE TABLE IF NOT EXISTS `project_requests` (
   PRIMARY KEY (`id`),
   UNIQUE KEY `uq_reference` (`reference`),
   KEY `idx_status_created` (`status`, `created_at`),
-  KEY `idx_ip_created` (`ip_hash`, `created_at`)
+  KEY `idx_ip_created` (`ip_hash`, `created_at`),
+  KEY `idx_agent` (`agent_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
--- No seed/dummy data. The table starts empty and is filled only by real
--- submissions through the API.
+-- Login sessions for agents (and the admin) — opaque bearer tokens.
+CREATE TABLE IF NOT EXISTS `sessions` (
+  `id`         BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `user_type`  ENUM('agent','admin') NOT NULL,
+  `user_id`    BIGINT UNSIGNED NOT NULL,        -- agents.id, or 0 for the single admin
+  `token_hash` CHAR(64)        NOT NULL,         -- sha256 of the bearer token
+  `expires_at` TIMESTAMP       NOT NULL,
+  `created_at` TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uq_token` (`token_hash`),
+  KEY `idx_expires` (`expires_at`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- Login throttle: one row per attempt, used to rate-limit by IP.
+CREATE TABLE IF NOT EXISTS `login_attempts` (
+  `id`         BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `ip_hash`    CHAR(64)        NOT NULL,
+  `success`    TINYINT(1)      NOT NULL DEFAULT 0,
+  `created_at` TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  KEY `idx_ip_time` (`ip_hash`, `created_at`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- No seed/dummy data. Tables start empty and fill from real activity.

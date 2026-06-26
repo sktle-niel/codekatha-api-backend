@@ -359,3 +359,70 @@ function send_client_confirmation(array $mail, array $r): bool
         return false;
     }
 }
+
+// Email an agent that their application was approved, with their link + login.
+function send_agent_approved(array $mail, string $siteUrl, array $agent): bool
+{
+    if (empty($mail['enabled']) || $mail['user'] === '' || $mail['pass'] === '') {
+        return false;
+    }
+    if (empty($agent['email']) || !filter_var($agent['email'], FILTER_VALIDATE_EMAIL)) {
+        return false;
+    }
+
+    $firstName = htmlspecialchars(strtok((string) $agent['name'], ' ') ?: 'there');
+    $refLink   = htmlspecialchars($siteUrl . '/?ref=' . $agent['ref_token']);
+    $loginUrl  = htmlspecialchars($siteUrl . '/login');
+
+    $html = '
+<div style="background:#f4f4f2;padding:28px 12px;font-family:Arial,Helvetica,sans-serif;">
+  <table role="presentation" align="center" width="600" cellpadding="0" cellspacing="0"
+         style="max-width:600px;width:100%;background:#fff;border:1px solid #eceae5;border-radius:14px;border-collapse:separate;overflow:hidden;">
+    <tr><td style="background:#18181b;padding:20px 28px;">
+      <span style="font-size:17px;font-weight:800;color:#fff;">CODEKATHA<span style="color:#c2f000;">X</span></span>
+    </td></tr>
+    <tr><td style="padding:28px 28px 0;">
+      <h1 style="margin:0 0 10px;color:#18181b;font-size:22px;">You are approved, ' . $firstName . '!</h1>
+      <p style="margin:0;color:#3f3f46;font-size:15px;line-height:1.7;">
+        Your agent account is now active. Share your referral link below with clients —
+        you earn <strong>30%</strong> on every project they sign.
+      </p>
+    </td></tr>
+    <tr><td style="padding:20px 28px 0;">
+      <table role="presentation" width="100%" style="background:#f7f6f3;border:1px solid #eceae5;border-radius:10px;">
+        <tr><td style="padding:14px 18px;">
+          <span style="color:#6f6f6a;font-size:12px;">Your referral link</span><br>
+          <span style="color:#18181b;font-size:14px;font-weight:700;word-break:break-all;">' . $refLink . '</span>
+        </td></tr>
+      </table>
+    </td></tr>
+    <tr><td style="padding:22px 28px 28px;">
+      <a href="' . $loginUrl . '" style="display:inline-block;background:#18181b;color:#fff;text-decoration:none;font-size:14px;font-weight:600;padding:11px 22px;border-radius:6px;">Log in to your dashboard</a>
+    </td></tr>
+    <tr><td style="background:#f7f6f3;border-top:1px solid #eceae5;padding:14px 28px;color:#9a9a96;font-size:11px;">
+      CODEKATHAX &middot; Agent Program
+    </td></tr>
+  </table>
+</div>';
+
+    $text = "You are approved, $firstName!\n\n"
+        . "Your agent account is now active. Share your referral link with clients —\n"
+        . "you earn 30% on every project they sign.\n\n"
+        . "Referral link: " . $siteUrl . '/?ref=' . $agent['ref_token'] . "\n"
+        . "Log in: " . $siteUrl . "/agent/login\n\n— CODEKATHAX";
+
+    $mailer = ckx_smtp_mailer($mail);
+    try {
+        $mailer->addAddress($agent['email'], $agent['name']);
+        $mailer->addReplyTo($mail['to'], $mail['from_name']);
+        $mailer->Subject = 'You are approved — CODEKATHAX Agent Program';
+        $mailer->isHTML(true);
+        $mailer->Body    = $html;
+        $mailer->AltBody = $text;
+        $mailer->send();
+        return true;
+    } catch (Throwable $e) {
+        error_log('CKX approve mail failed: ' . $e->getMessage());
+        return false;
+    }
+}

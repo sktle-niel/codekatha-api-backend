@@ -28,21 +28,6 @@ const SYSTEM_TYPES = ['website', 'desktop', 'mobile'];
 const SERVICES     = ['business-website', 'landing-page', 'web-system', 'inventory', 'booking', 'other'];
 const BUDGETS      = ['3-5k', '5-10k', '10-20k', '20-50k', 'custom'];
 
-function client_ip(): string
-{
-    return $_SERVER['REMOTE_ADDR'] ?? '';
-}
-
-function clean_text(string $s): string
-{
-    return preg_replace('/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/u', '', $s);
-}
-
-function field(array $body, string $key, int $max = 255): string
-{
-    return mb_substr(clean_text(trim((string) ($body[$key] ?? ''))), 0, $max);
-}
-
 // Public reference, e.g. "CKX-7G2K9Q".
 function make_reference(): string
 {
@@ -79,6 +64,7 @@ try {
     $email       = field($body, 'email', 160);
     $phone       = field($body, 'phone', 60);
     $org         = field($body, 'org', 160);
+    $ref         = field($body, 'ref', 20); // referral token from an agent's link
 
     // --- Validation (server is the source of truth; mirrors the frontend) ---
     $errors = [];
@@ -129,6 +115,23 @@ try {
 
     $pdo = db();
 
+    // --- Referral attribution: link to an approved agent if a valid token came in.
+    // Wrapped so a missing agents table (pre-migration) never breaks submissions. ---
+    $agentId  = null;
+    $refToken = null;
+    if ($ref !== '' && preg_match('/^[A-Za-z0-9]+$/', $ref)) {
+        try {
+            $a = $pdo->prepare("SELECT id FROM agents WHERE ref_token = ? AND status = 'approved' LIMIT 1");
+            $a->execute([$ref]);
+            if ($row = $a->fetch()) {
+                $agentId  = (int) $row['id'];
+                $refToken = $ref;
+            }
+        } catch (Throwable $e) {
+            // agents table not present yet — ignore the referral.
+        }
+    }
+
     // --- Per-IP rate limiting (IP stored only as a salted hash) ---
     $ipHash = hash('sha256', client_ip() . '|' . $config['ip_salt']);
     $rl = $pdo->prepare(
@@ -156,8 +159,8 @@ try {
                 "INSERT INTO project_requests
                     (reference, path, system_type, service, project_title, business_name,
                      industry, has_existing, description, deadline, budget, custom_budget,
-                     name, email, phone, org, ip_hash, user_agent)
-                 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
+                     name, email, phone, org, agent_id, ref_token, ip_hash, user_agent)
+                 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
             );
             $stmt->execute([
                 $reference,
@@ -176,6 +179,8 @@ try {
                 $email,
                 $phone ?: null,
                 $org ?: null,
+                $agentId,
+                $refToken,
                 $ipHash,
                 $ua,
             ]);

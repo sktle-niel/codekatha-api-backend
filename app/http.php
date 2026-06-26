@@ -10,7 +10,7 @@ function cors(array $allowed): void
     if ($origin !== '' && ($allowAny || in_array($origin, $allowed, true))) {
         header('Access-Control-Allow-Origin: ' . ($allowAny ? '*' : $origin));
         header('Access-Control-Allow-Methods: GET, POST, OPTIONS');
-        header('Access-Control-Allow-Headers: Content-Type');
+        header('Access-Control-Allow-Headers: Content-Type, Authorization');
         header('Access-Control-Max-Age: 86400');
     }
     header('Vary: Origin');

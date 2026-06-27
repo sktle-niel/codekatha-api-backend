@@ -120,44 +120,90 @@ try {
     }
 
     // ------------------------------------------------------------------- me
+    // Profile + totals (computed across ALL referrals). The client list itself
+    // is fetched separately and paginated via ?do=clients.
     if ($method === 'GET' && $do === 'me') {
         $agent = ckx_require_agent($pdo);
         $rate = (float) $config['commission_rate'];
 
-        $stmt = $pdo->prepare(
-            "SELECT reference, name, business_name, project_title, path,
-                    deal_amount, deal_status, created_at
-             FROM project_requests WHERE agent_id = ? ORDER BY id DESC"
+        $agg = $pdo->prepare(
+            "SELECT COUNT(*) referrals,
+                    COALESCE(SUM(deal_status='won'),0) won,
+                    COALESCE(SUM(deal_status='lead'),0) pending,
+                    COALESCE(SUM(CASE WHEN deal_status='won' THEN deal_amount ELSE 0 END),0) won_revenue
+             FROM project_requests WHERE agent_id = ?"
         );
-        $stmt->execute([(int) $agent['id']]);
-        $clients = $stmt->fetchAll();
-
-        $won = 0;
-        $pending = 0;
-        $earnings = 0.0;
-        foreach ($clients as &$c) {
-            $c['deal_amount'] = $c['deal_amount'] !== null ? (float) $c['deal_amount'] : null;
-            $c['commission'] = ($c['deal_status'] === 'won' && $c['deal_amount'])
-                ? round($c['deal_amount'] * $rate, 2) : 0.0;
-            if ($c['deal_status'] === 'won') {
-                $won++;
-                $earnings += $c['commission'];
-            } elseif ($c['deal_status'] === 'lead') {
-                $pending++;
-            }
-        }
-        unset($c);
+        $agg->execute([(int) $agent['id']]);
+        $s = $agg->fetch();
 
         json_out([
             'agent' => agent_public($agent),
             'stats' => [
-                'referrals' => count($clients),
-                'won'       => $won,
-                'pending'   => $pending,
-                'earnings'  => round($earnings, 2),
+                'referrals' => (int) $s['referrals'],
+                'won'       => (int) $s['won'],
+                'pending'   => (int) $s['pending'],
+                'earnings'  => round(((float) $s['won_revenue']) * $rate, 2),
                 'rate'      => $rate,
             ],
-            'clients' => $clients,
+        ]);
+    }
+
+    // Distinct dates (newest first) that this agent has referrals on — for filters.
+    if ($method === 'GET' && $do === 'dates') {
+        $agent = ckx_require_agent($pdo);
+        $stmt = $pdo->prepare(
+            "SELECT DISTINCT DATE(created_at) d FROM project_requests
+             WHERE agent_id = ? ORDER BY d DESC"
+        );
+        $stmt->execute([(int) $agent['id']]);
+        json_out(['dates' => $stmt->fetchAll(PDO::FETCH_COLUMN)]);
+    }
+
+    // --------------------------------------------------------- clients (page)
+    if ($method === 'GET' && $do === 'clients') {
+        $agent = ckx_require_agent($pdo);
+        $rate = (float) $config['commission_rate'];
+        $aid = (int) $agent['id'];
+
+        [$cond, $dp] = ckx_date_filter(
+            (string) ($_GET['month'] ?? ''),
+            (string) ($_GET['day'] ?? '')
+        );
+        $where = "agent_id = ? AND $cond";
+        $params = array_merge([$aid], $dp);
+
+        $limit = 10;
+        $ct = $pdo->prepare("SELECT COUNT(*) FROM project_requests WHERE $where");
+        $ct->execute($params);
+        $total = (int) $ct->fetchColumn();
+        $pages = max(1, (int) ceil($total / $limit));
+        $page = max(1, (int) ($_GET['page'] ?? 1));
+        if ($page > $pages) {
+            $page = $pages;
+        }
+        $offset = ($page - 1) * $limit; // both ints, safe to inline
+
+        $stmt = $pdo->prepare(
+            "SELECT reference, name, business_name, project_title, path,
+                    deal_amount, deal_status, created_at
+             FROM project_requests WHERE $where
+             ORDER BY id DESC LIMIT $limit OFFSET $offset"
+        );
+        $stmt->execute($params);
+        $clients = $stmt->fetchAll();
+        foreach ($clients as &$c) {
+            $c['deal_amount'] = $c['deal_amount'] !== null ? (float) $c['deal_amount'] : null;
+            $c['commission'] = ($c['deal_status'] === 'won' && $c['deal_amount'])
+                ? round($c['deal_amount'] * $rate, 2) : 0.0;
+        }
+        unset($c);
+
+        json_out([
+            'clients'  => $clients,
+            'page'     => $page,
+            'pages'    => $pages,
+            'total'    => $total,
+            'has_more' => $page < $pages,
         ]);
     }
 

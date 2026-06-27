@@ -76,10 +76,26 @@ try {
         json_out(['ok' => true, 'emailed' => $emailed]);
     }
 
+    // Distinct dates (YYYY-MM-DD, newest first) that have requests — for filters.
+    if ($method === 'GET' && $do === 'dates') {
+        $dates = $pdo->query(
+            "SELECT DISTINCT DATE(created_at) d FROM project_requests ORDER BY d DESC"
+        )->fetchAll(PDO::FETCH_COLUMN);
+        json_out(['dates' => $dates]);
+    }
+
     // ------------------------------------------------------------- requests
     if ($method === 'GET' && $do === 'requests') {
+        [$cond, $params] = ckx_date_filter(
+            (string) ($_GET['month'] ?? ''),
+            (string) ($_GET['day'] ?? ''),
+            'pr.created_at'
+        );
+
         $limit = 10;
-        $total = (int) $pdo->query("SELECT COUNT(*) FROM project_requests")->fetchColumn();
+        $ct = $pdo->prepare("SELECT COUNT(*) FROM project_requests pr WHERE $cond");
+        $ct->execute($params);
+        $total = (int) $ct->fetchColumn();
         $pages = max(1, (int) ceil($total / $limit));
         $page = max(1, (int) ($_GET['page'] ?? 1));
         if ($page > $pages) {
@@ -87,7 +103,7 @@ try {
         }
         $offset = ($page - 1) * $limit; // both ints, safe to inline
 
-        $rows = $pdo->query(
+        $stmt = $pdo->prepare(
             "SELECT pr.id, pr.reference, pr.path, pr.name, pr.email, pr.phone,
                     pr.business_name, pr.project_title, pr.service, pr.system_type,
                     pr.budget, pr.custom_budget, pr.description,
@@ -95,9 +111,12 @@ try {
                     pr.agent_id, a.name AS agent_name
              FROM project_requests pr
              LEFT JOIN agents a ON a.id = pr.agent_id
+             WHERE $cond
              ORDER BY pr.id DESC
              LIMIT $limit OFFSET $offset"
-        )->fetchAll();
+        );
+        $stmt->execute($params);
+        $rows = $stmt->fetchAll();
         foreach ($rows as &$r) {
             $r['id'] = (int) $r['id'];
             $r['agent_id'] = $r['agent_id'] !== null ? (int) $r['agent_id'] : null;

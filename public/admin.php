@@ -15,7 +15,8 @@ security_headers();
 
 $method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
 $do = $_GET['do'] ?? '';
-$rate = (float) $config['commission_rate'];
+$defaultPct = (int) $config['commission_default_pct'];
+$maxPct = (int) $config['commission_max_pct'];
 
 try {
     $pdo = db();
@@ -77,10 +78,21 @@ try {
     }
 
     // Distinct dates (YYYY-MM-DD, newest first) that have requests — for filters.
+    // Optional ?status=lead|won|lost narrows to that deal stage.
     if ($method === 'GET' && $do === 'dates') {
-        $dates = $pdo->query(
-            "SELECT DISTINCT DATE(created_at) d FROM project_requests ORDER BY d DESC"
-        )->fetchAll(PDO::FETCH_COLUMN);
+        $status = (string) ($_GET['status'] ?? '');
+        if (in_array($status, ['lead', 'won', 'lost'], true)) {
+            $stmt = $pdo->prepare(
+                "SELECT DISTINCT DATE(created_at) d FROM project_requests
+                 WHERE deal_status = ? ORDER BY d DESC"
+            );
+            $stmt->execute([$status]);
+            $dates = $stmt->fetchAll(PDO::FETCH_COLUMN);
+        } else {
+            $dates = $pdo->query(
+                "SELECT DISTINCT DATE(created_at) d FROM project_requests ORDER BY d DESC"
+            )->fetchAll(PDO::FETCH_COLUMN);
+        }
         json_out(['dates' => $dates]);
     }
 
@@ -91,6 +103,11 @@ try {
             (string) ($_GET['day'] ?? ''),
             'pr.created_at'
         );
+        $status = (string) ($_GET['status'] ?? '');
+        if (in_array($status, ['lead', 'won', 'lost'], true)) {
+            $cond .= ' AND pr.deal_status = ?';
+            $params[] = $status;
+        }
 
         $limit = 10;
         $ct = $pdo->prepare("SELECT COUNT(*) FROM project_requests pr WHERE $cond");
@@ -107,7 +124,7 @@ try {
             "SELECT pr.id, pr.reference, pr.path, pr.name, pr.email, pr.phone,
                     pr.business_name, pr.project_title, pr.service, pr.system_type,
                     pr.budget, pr.custom_budget, pr.description,
-                    pr.deal_amount, pr.deal_status, pr.created_at,
+                    pr.deal_amount, pr.deal_status, pr.commission_pct, pr.created_at,
                     pr.agent_id, a.name AS agent_name
              FROM project_requests pr
              LEFT JOIN agents a ON a.id = pr.agent_id
@@ -121,18 +138,20 @@ try {
             $r['id'] = (int) $r['id'];
             $r['agent_id'] = $r['agent_id'] !== null ? (int) $r['agent_id'] : null;
             $r['deal_amount'] = $r['deal_amount'] !== null ? (float) $r['deal_amount'] : null;
+            $r['commission_pct'] = (int) $r['commission_pct'];
             $r['agent_commission'] =
                 ($r['deal_status'] === 'won' && $r['agent_id'] && $r['deal_amount'])
-                    ? round($r['deal_amount'] * $rate, 2) : 0.0;
+                    ? round($r['deal_amount'] * $r['commission_pct'] / 100, 2) : 0.0;
         }
         unset($r);
         json_out([
-            'requests' => $rows,
-            'rate'     => $rate,
-            'page'     => $page,
-            'pages'    => $pages,
-            'total'    => $total,
-            'limit'    => $limit,
+            'requests'    => $rows,
+            'default_pct' => $defaultPct,
+            'max_pct'     => $maxPct,
+            'page'        => $page,
+            'pages'       => $pages,
+            'total'       => $total,
+            'limit'       => $limit,
         ]);
     }
 
@@ -156,15 +175,24 @@ try {
                 json_out(['error' => 'Amount is out of range.'], 422);
             }
         }
+        // Per-client commission percent — default 15, capped at the max (no overlap).
+        $pct = isset($body['commission_pct']) ? (int) $body['commission_pct'] : $defaultPct;
+        if ($pct < 0) {
+            $pct = 0;
+        } elseif ($pct > $maxPct) {
+            $pct = $maxPct;
+        }
+
         $chk = $pdo->prepare("SELECT 1 FROM project_requests WHERE id = ? LIMIT 1");
         $chk->execute([$id]);
         if (!$chk->fetch()) {
             json_out(['error' => 'Request not found.'], 404);
         }
-        $pdo->prepare("UPDATE project_requests SET deal_amount = ?, deal_status = ? WHERE id = ?")
-            ->execute([$amount, $status, $id]);
-        $commission = ($status === 'won' && $amount) ? round($amount * $rate, 2) : 0.0;
-        json_out(['ok' => true, 'commission' => $commission]);
+        $pdo->prepare(
+            "UPDATE project_requests SET deal_amount = ?, deal_status = ?, commission_pct = ? WHERE id = ?"
+        )->execute([$amount, $status, $pct, $id]);
+        $commission = ($status === 'won' && $amount) ? round($amount * $pct / 100, 2) : 0.0;
+        json_out(['ok' => true, 'commission' => $commission, 'commission_pct' => $pct]);
     }
 
     // -------------------------------------------------------------- summary
@@ -176,7 +204,8 @@ try {
                 COALESCE(SUM(deal_status='won'),0) won,
                 COALESCE(SUM(deal_status='lost'),0) lost,
                 COALESCE(SUM(CASE WHEN deal_status='won' THEN deal_amount ELSE 0 END),0) revenue_won,
-                COALESCE(SUM(CASE WHEN deal_status='won' AND agent_id IS NOT NULL THEN deal_amount ELSE 0 END),0) agent_revenue
+                COALESCE(SUM(CASE WHEN deal_status='won' AND agent_id IS NOT NULL
+                    THEN deal_amount * commission_pct / 100 ELSE 0 END),0) agent_commission
              FROM project_requests"
         )->fetch();
         $ag = $pdo->query(
@@ -187,7 +216,7 @@ try {
         )->fetch();
 
         $revenueWon = (float) $a['revenue_won'];
-        $agentCommission = round(((float) $a['agent_revenue']) * $rate, 2);
+        $agentCommission = round((float) $a['agent_commission'], 2);
         json_out([
             'requests' => [
                 'total' => (int) $a['total'],
@@ -205,8 +234,92 @@ try {
                 'pending'  => (int) $ag['pending'],
                 'approved' => (int) $ag['approved'],
             ],
-            'rate' => $rate,
+            'default_pct' => $defaultPct,
+            'max_pct'     => $maxPct,
         ]);
+    }
+
+    // --------------------------------------------------------------- settings
+    if ($do === 'settings' && $method === 'GET') {
+        $ag = $pdo->query(
+            "SELECT COUNT(*) total,
+                    COALESCE(SUM(status='pending'),0) pending,
+                    COALESCE(SUM(status='approved'),0) approved
+             FROM agents"
+        )->fetch();
+        json_out([
+            'agent_limit' => (int) ckx_get_setting($pdo, 'agent_limit', '0'),
+            'agents' => [
+                'total'    => (int) $ag['total'],
+                'pending'  => (int) $ag['pending'],
+                'approved' => (int) $ag['approved'],
+            ],
+            'commission' => [
+                'default_pct' => $defaultPct,
+                'max_pct'     => $maxPct,
+            ],
+        ]);
+    }
+
+    if ($do === 'settings' && $method === 'POST') {
+        require_json();
+        require_allowed_origin($config['allowed_origins']);
+        $body = read_json_body();
+        $limit = (int) ($body['agent_limit'] ?? 0);
+        if ($limit < 0) {
+            $limit = 0;
+        } elseif ($limit > 100000) {
+            $limit = 100000;
+        }
+        ckx_set_setting($pdo, 'agent_limit', (string) $limit);
+        json_out(['ok' => true, 'agent_limit' => $limit]);
+    }
+
+    // ---------------------------------------------------------------- account
+    if ($do === 'account' && $method === 'GET') {
+        $admin = ckx_admin_account($pdo, $config['admin']);
+        json_out(['name' => $admin['name'], 'email' => $admin['email']]);
+    }
+
+    if ($do === 'account' && $method === 'POST') {
+        require_json();
+        require_allowed_origin($config['allowed_origins']);
+        $body = read_json_body();
+        $admin = ckx_admin_account($pdo, $config['admin']);
+
+        $current = (string) ($body['current_password'] ?? '');
+        if ($admin['password_hash'] === '' || !password_verify($current, $admin['password_hash'])) {
+            json_out(['errors' => ['current_password' => 'Current password is incorrect.']], 403);
+        }
+
+        $name = field($body, 'name', 120);
+        $email = field($body, 'email', 160);
+        $newPass = (string) ($body['new_password'] ?? '');
+
+        $errors = [];
+        if ($name === '') {
+            $errors['name'] = 'Please enter a name.';
+        }
+        if ($email === '' || !filter_var($email, FILTER_VALIDATE_EMAIL)) {
+            $errors['email'] = 'Please enter a valid email.';
+        }
+        if ($newPass !== '') {
+            if (strlen($newPass) < 8) {
+                $errors['new_password'] = 'New password must be at least 8 characters.';
+            } elseif (strlen($newPass) > 200) {
+                $errors['new_password'] = 'New password is too long.';
+            }
+        }
+        if ($errors) {
+            json_out(['errors' => $errors], 422);
+        }
+
+        ckx_set_setting($pdo, 'admin_name', $name);
+        ckx_set_setting($pdo, 'admin_email', $email);
+        if ($newPass !== '') {
+            ckx_set_setting($pdo, 'admin_password_hash', password_hash($newPass, PASSWORD_DEFAULT));
+        }
+        json_out(['ok' => true, 'name' => $name, 'email' => $email]);
     }
 
     json_out(['error' => 'Not found.'], 404);

@@ -11,5 +11,6 @@ require __DIR__ . '/db.php';
 require __DIR__ . '/mailer.php';
 require __DIR__ . '/validation.php';
 require __DIR__ . '/auth.php';
+require __DIR__ . '/settings.php';
 
 return require __DIR__ . '/config.php';

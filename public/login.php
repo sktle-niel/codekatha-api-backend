@@ -23,8 +23,8 @@ try {
     $ipHash = hash('sha256', client_ip() . '|' . $config['ip_salt']);
     ckx_login_guard($pdo, $ipHash); // brute-force throttle
 
-    // 1) Admin (owner) account from config.
-    $admin = $config['admin'];
+    // 1) Admin (owner) account (DB-backed, falls back to .env).
+    $admin = ckx_admin_account($pdo, $config['admin']);
     if (
         strtolower($admin['email']) === strtolower($email)
         && $admin['password_hash'] !== ''

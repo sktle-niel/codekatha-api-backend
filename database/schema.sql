@@ -55,6 +55,7 @@ CREATE TABLE IF NOT EXISTS `project_requests` (
   `ref_token`     VARCHAR(20)     DEFAULT NULL,
   `deal_amount`   DECIMAL(10,2)   DEFAULT NULL,
   `deal_status`   ENUM('lead','won','lost') NOT NULL DEFAULT 'lead',
+  `commission_pct` TINYINT UNSIGNED NOT NULL DEFAULT 15,
   `status`        ENUM('new','read','archived') NOT NULL DEFAULT 'new',
   `ip_hash`       CHAR(64)        DEFAULT NULL,
   `user_agent`    VARCHAR(255)    DEFAULT NULL,
@@ -88,5 +89,15 @@ CREATE TABLE IF NOT EXISTS `login_attempts` (
   PRIMARY KEY (`id`),
   KEY `idx_ip_time` (`ip_hash`, `created_at`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- Editable key/value settings (e.g. agent_limit). Admin-configurable.
+CREATE TABLE IF NOT EXISTS `app_settings` (
+  `name`  VARCHAR(64)  NOT NULL,
+  `value` VARCHAR(255) NOT NULL,
+  PRIMARY KEY (`name`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+INSERT INTO `app_settings` (`name`, `value`) VALUES ('agent_limit', '0')
+  ON DUPLICATE KEY UPDATE `name` = `name`;
 
 -- No seed/dummy data. Tables start empty and fill from real activity.

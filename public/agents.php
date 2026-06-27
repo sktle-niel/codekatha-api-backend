@@ -81,6 +81,15 @@ try {
             json_out(['errors' => ['email' => 'An account with this email already exists.']], 409);
         }
 
+        // Capacity limit set by the admin in Settings (0 = unlimited).
+        $agentLimit = (int) ckx_get_setting($pdo, 'agent_limit', '0');
+        if ($agentLimit > 0) {
+            $count = (int) $pdo->query("SELECT COUNT(*) FROM agents")->fetchColumn();
+            if ($count >= $agentLimit) {
+                json_out(['error' => 'Agent applications are currently closed.'], 403);
+            }
+        }
+
         // Per-IP signup limit (anti-spam): cap applications from one network per day.
         $sc = $pdo->prepare(
             "SELECT COUNT(*) FROM agents WHERE ip_hash = ? AND created_at > (NOW() - INTERVAL 1 DAY)"
@@ -124,13 +133,13 @@ try {
     // is fetched separately and paginated via ?do=clients.
     if ($method === 'GET' && $do === 'me') {
         $agent = ckx_require_agent($pdo);
-        $rate = (float) $config['commission_rate'];
 
         $agg = $pdo->prepare(
             "SELECT COUNT(*) referrals,
                     COALESCE(SUM(deal_status='won'),0) won,
                     COALESCE(SUM(deal_status='lead'),0) pending,
-                    COALESCE(SUM(CASE WHEN deal_status='won' THEN deal_amount ELSE 0 END),0) won_revenue
+                    COALESCE(SUM(CASE WHEN deal_status='won'
+                        THEN deal_amount * commission_pct / 100 ELSE 0 END),0) earnings
              FROM project_requests WHERE agent_id = ?"
         );
         $agg->execute([(int) $agent['id']]);
@@ -142,8 +151,7 @@ try {
                 'referrals' => (int) $s['referrals'],
                 'won'       => (int) $s['won'],
                 'pending'   => (int) $s['pending'],
-                'earnings'  => round(((float) $s['won_revenue']) * $rate, 2),
-                'rate'      => $rate,
+                'earnings'  => round((float) $s['earnings'], 2),
             ],
         ]);
     }
@@ -162,7 +170,6 @@ try {
     // --------------------------------------------------------- clients (page)
     if ($method === 'GET' && $do === 'clients') {
         $agent = ckx_require_agent($pdo);
-        $rate = (float) $config['commission_rate'];
         $aid = (int) $agent['id'];
 
         [$cond, $dp] = ckx_date_filter(
@@ -185,7 +192,7 @@ try {
 
         $stmt = $pdo->prepare(
             "SELECT reference, name, business_name, project_title, path,
-                    deal_amount, deal_status, created_at
+                    deal_amount, deal_status, commission_pct, created_at
              FROM project_requests WHERE $where
              ORDER BY id DESC LIMIT $limit OFFSET $offset"
         );
@@ -193,8 +200,9 @@ try {
         $clients = $stmt->fetchAll();
         foreach ($clients as &$c) {
             $c['deal_amount'] = $c['deal_amount'] !== null ? (float) $c['deal_amount'] : null;
+            $c['commission_pct'] = (int) $c['commission_pct'];
             $c['commission'] = ($c['deal_status'] === 'won' && $c['deal_amount'])
-                ? round($c['deal_amount'] * $rate, 2) : 0.0;
+                ? round($c['deal_amount'] * $c['commission_pct'] / 100, 2) : 0.0;
         }
         unset($c);
 
@@ -205,6 +213,55 @@ try {
             'total'    => $total,
             'has_more' => $page < $pages,
         ]);
+    }
+
+    // ----------------------------------------------------- account (auth) update
+    if ($method === 'POST' && $do === 'account') {
+        require_json();
+        require_allowed_origin($config['allowed_origins']);
+        $agent = ckx_require_agent($pdo);
+        $body = read_json_body();
+
+        $current = (string) ($body['current_password'] ?? '');
+        if (!password_verify($current, $agent['password_hash'])) {
+            json_out(['errors' => ['current_password' => 'Current password is incorrect.']], 403);
+        }
+
+        $name = field($body, 'name', 120);
+        $email = field($body, 'email', 160);
+        $newPass = (string) ($body['new_password'] ?? '');
+
+        $errors = [];
+        $set = function (string $k, ?string $m) use (&$errors) {
+            if ($m !== null) $errors[$k] = $m;
+        };
+        $set('name', ckx_validate_name($name));
+        $set('email', ckx_validate_email($email));
+        if ($newPass !== '') {
+            if (strlen($newPass) < 8) {
+                $errors['new_password'] = 'New password must be at least 8 characters.';
+            } elseif (strlen($newPass) > 200) {
+                $errors['new_password'] = 'New password is too long.';
+            }
+        }
+        if ($errors) {
+            json_out(['errors' => $errors], 422);
+        }
+
+        $ex = $pdo->prepare("SELECT 1 FROM agents WHERE email = ? AND id <> ? LIMIT 1");
+        $ex->execute([$email, (int) $agent['id']]);
+        if ($ex->fetch()) {
+            json_out(['errors' => ['email' => 'That email is already in use.']], 409);
+        }
+
+        if ($newPass !== '') {
+            $pdo->prepare("UPDATE agents SET name = ?, email = ?, password_hash = ? WHERE id = ?")
+                ->execute([$name, $email, password_hash($newPass, PASSWORD_DEFAULT), (int) $agent['id']]);
+        } else {
+            $pdo->prepare("UPDATE agents SET name = ?, email = ? WHERE id = ?")
+                ->execute([$name, $email, (int) $agent['id']]);
+        }
+        json_out(['ok' => true, 'name' => $name, 'email' => $email]);
     }
 
     json_out(['error' => 'Not found.'], 404);

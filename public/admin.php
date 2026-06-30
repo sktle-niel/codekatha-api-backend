@@ -7,7 +7,7 @@
 //   POST /admin.php?do=agent-status  -> { id, status }  approve / suspend / pending
 //   GET  /admin.php?do=requests      -> all project requests (+ agent + commission)
 //   POST /admin.php?do=deal          -> { id, deal_amount, deal_status }
-//   GET  /admin.php?do=summary       -> totals (requests, revenue, 30/70, agents)
+//   GET  /admin.php?do=summary       -> totals (requests, revenue, commission, agents)
 
 $config = require __DIR__ . '/../app/bootstrap.php';
 cors($config['allowed_origins']);
@@ -72,7 +72,7 @@ try {
         }
         $emailed = false;
         if ($status === 'approved' && !$wasApproved) {
-            $emailed = send_agent_approved($config['mail'], $config['site_url'], $agent);
+            $emailed = send_agent_approved($config['mail'], $config['site_url'], $agent, $maxPct);
         }
         json_out(['ok' => true, 'emailed' => $emailed]);
     }

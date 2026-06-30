@@ -361,7 +361,8 @@ function send_client_confirmation(array $mail, array $r): bool
 }
 
 // Email an agent that their application was approved, with their link + login.
-function send_agent_approved(array $mail, string $siteUrl, array $agent): bool
+// $maxPct is the commission ceiling (per-client rate is set by the owner per deal).
+function send_agent_approved(array $mail, string $siteUrl, array $agent, int $maxPct = 30): bool
 {
     if (empty($mail['enabled']) || $mail['user'] === '' || $mail['pass'] === '') {
         return false;
@@ -385,7 +386,7 @@ function send_agent_approved(array $mail, string $siteUrl, array $agent): bool
       <h1 style="margin:0 0 10px;color:#18181b;font-size:22px;">You are approved, ' . $firstName . '!</h1>
       <p style="margin:0;color:#3f3f46;font-size:15px;line-height:1.7;">
         Your agent account is now active. Share your referral link below with clients —
-        you earn <strong>30%</strong> on every project they sign.
+        you earn up to <strong>' . $maxPct . '%</strong> on every project they sign.
       </p>
     </td></tr>
     <tr><td style="padding:20px 28px 0;">
@@ -407,9 +408,9 @@ function send_agent_approved(array $mail, string $siteUrl, array $agent): bool
 
     $text = "You are approved, $firstName!\n\n"
         . "Your agent account is now active. Share your referral link with clients —\n"
-        . "you earn 30% on every project they sign.\n\n"
+        . "you earn up to {$maxPct}% on every project they sign.\n\n"
         . "Referral link: " . $siteUrl . '/?ref=' . $agent['ref_token'] . "\n"
-        . "Log in: " . $siteUrl . "/agent/login\n\n— CODEKATHAX";
+        . "Log in: " . $siteUrl . "/login\n\n— CODEKATHAX";
 
     $mailer = ckx_smtp_mailer($mail);
     try {

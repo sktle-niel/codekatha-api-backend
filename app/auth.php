@@ -2,6 +2,11 @@
 // Token-based auth for agents and the admin. Opaque bearer tokens are stored
 // only as a sha256 hash in the `sessions` table; the raw token lives client-side.
 
+// Sessions slide: every use that's been idle a while bumps the expiry back to
+// this many days out. So an active login never has to re-authenticate, while a
+// session left untouched for this long simply dies.
+const CKX_SESSION_DAYS = 30;
+
 function ckx_bearer_token(): string
 {
     $h = $_SERVER['HTTP_AUTHORIZATION'] ?? $_SERVER['REDIRECT_HTTP_AUTHORIZATION'] ?? '';
@@ -17,7 +22,7 @@ function ckx_bearer_token(): string
 }
 
 // Create a session and return the raw token to hand to the client.
-function ckx_issue_token(PDO $pdo, string $userType, int $userId, int $days = 30): string
+function ckx_issue_token(PDO $pdo, string $userType, int $userId, int $days = CKX_SESSION_DAYS): string
 {
     $token = bin2hex(random_bytes(32));
     $pdo->prepare(
@@ -37,13 +42,25 @@ function ckx_current_session(PDO $pdo): ?array
     if ($token === '') {
         return null;
     }
+    $hash = hash('sha256', $token);
     $stmt = $pdo->prepare(
         "SELECT user_type, user_id FROM sessions
          WHERE token_hash = ? AND expires_at > NOW() LIMIT 1"
     );
-    $stmt->execute([hash('sha256', $token)]);
+    $stmt->execute([$hash]);
     $row = $stmt->fetch();
-    return $row ?: null;
+    if (!$row) {
+        return null;
+    }
+    // Sliding expiry: top up an aging session (at most once a day, so we don't
+    // write on every single request) so active logins stay signed in.
+    $pdo->prepare(
+        "UPDATE sessions
+         SET expires_at = DATE_ADD(NOW(), INTERVAL " . CKX_SESSION_DAYS . " DAY)
+         WHERE token_hash = ?
+           AND expires_at < DATE_ADD(NOW(), INTERVAL " . (CKX_SESSION_DAYS - 1) . " DAY)"
+    )->execute([$hash]);
+    return $row;
 }
 
 function ckx_logout(PDO $pdo): void

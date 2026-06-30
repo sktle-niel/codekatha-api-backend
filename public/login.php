@@ -31,7 +31,7 @@ try {
         && password_verify($password, $admin['password_hash'])
     ) {
         ckx_login_record($pdo, $ipHash, true);
-        $token = ckx_issue_token($pdo, 'admin', 0, 7); // admin sessions last 7 days
+        $token = ckx_issue_token($pdo, 'admin', 0); // sliding session (see CKX_SESSION_DAYS)
         json_out(['ok' => true, 'role' => 'admin', 'token' => $token]);
     }
 

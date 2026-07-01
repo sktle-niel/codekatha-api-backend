@@ -179,6 +179,13 @@ try {
         $where = "agent_id = ? AND $cond";
         $params = array_merge([$aid], $dp);
 
+        // Optional deal-stage filter (pending = lead, completed = won).
+        $status = (string) ($_GET['status'] ?? '');
+        if (in_array($status, ['lead', 'won', 'lost'], true)) {
+            $where .= ' AND deal_status = ?';
+            $params[] = $status;
+        }
+
         $limit = 10;
         $ct = $pdo->prepare("SELECT COUNT(*) FROM project_requests WHERE $where");
         $ct->execute($params);
@@ -192,7 +199,7 @@ try {
 
         $stmt = $pdo->prepare(
             "SELECT reference, name, business_name, project_title, path,
-                    deal_amount, deal_status, commission_pct, created_at
+                    deal_amount, downpayment, deal_status, commission_pct, created_at
              FROM project_requests WHERE $where
              ORDER BY id DESC LIMIT $limit OFFSET $offset"
         );

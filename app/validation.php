@@ -194,3 +194,19 @@ function ckx_validate_custom_budget(string $raw): ?string
     }
     return null;
 }
+
+/** Optional downpayment the client proposes (must include an amount if given). */
+function ckx_validate_downpayment(string $raw): ?string
+{
+    $s = trim($raw);
+    if ($s === '') {
+        return null; // optional — the client can skip it
+    }
+    if (mb_strlen($s, 'UTF-8') > 120) {
+        return "That's too long.";
+    }
+    if (!preg_match('/\d/', $s)) {
+        return 'Please include an amount, e.g. 2,000.';
+    }
+    return null;
+}

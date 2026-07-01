@@ -60,6 +60,7 @@ try {
     $deadline    = field($body, 'deadline', 120);
     $budget      = field($body, 'budget', 40);
     $customBudget = field($body, 'customBudget', 120);
+    $downpayment = field($body, 'downpayment', 120); // optional; client can finalize with owner later
     $name        = field($body, 'name', 120);
     $email       = field($body, 'email', 160);
     $phone       = field($body, 'phone', 60);
@@ -101,6 +102,7 @@ try {
     } elseif ($budget === 'custom') {
         $set('customBudget', ckx_validate_custom_budget($customBudget));
     }
+    $set('downpayment', ckx_validate_downpayment($downpayment));
 
     $set('name', ckx_validate_name($name));
     $set('email', ckx_validate_email($email));
@@ -159,8 +161,8 @@ try {
                 "INSERT INTO project_requests
                     (reference, path, system_type, service, project_title, business_name,
                      industry, has_existing, description, deadline, budget, custom_budget,
-                     name, email, phone, org, agent_id, ref_token, ip_hash, user_agent)
-                 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
+                     downpayment, name, email, phone, org, agent_id, ref_token, ip_hash, user_agent)
+                 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
             );
             $stmt->execute([
                 $reference,
@@ -175,6 +177,7 @@ try {
                 $deadline ?: null,
                 $budget ?: null,
                 $budget === 'custom' ? ($customBudget ?: null) : null,
+                $downpayment ?: null,
                 $name,
                 $email,
                 $phone ?: null,
@@ -208,6 +211,7 @@ try {
         'deadline'      => $deadline,
         'budget'        => $budget,
         'custom_budget' => $customBudget,
+        'downpayment'   => $downpayment,
         'name'          => $name,
         'email'         => $email,
         'phone'         => $phone,

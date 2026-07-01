@@ -81,6 +81,7 @@ function request_rows(array $r): array
     }
 
     $rows['Budget'] = budget_label((string) $r['budget'], (string) $r['custom_budget']);
+    if (!empty($r['downpayment'])) $rows['Downpayment'] = $r['downpayment'];
     $rows['Name']   = $r['name'];
     $rows['Email']  = $r['email'];
     if (!empty($r['phone'])) $rows['Phone'] = $r['phone'];
@@ -121,6 +122,7 @@ function build_email_html(array $r): string
         if (!empty($r['has_existing']))  $project['Existing website'] = $r['has_existing'];
     }
     $project['Budget'] = budget_label((string) $r['budget'], (string) $r['custom_budget']);
+    if (!empty($r['downpayment'])) $project['Downpayment'] = $r['downpayment'];
 
     $contact = ['Name' => $r['name'], 'Email' => $r['email']];
     if (!empty($r['phone'])) $contact['Phone / Messenger'] = $r['phone'];
@@ -270,6 +272,7 @@ function build_client_html(array $r): string
         if (!empty($r['business_name'])) $summary['Business'] = $r['business_name'];
     }
     $summary['Budget'] = budget_label((string) $r['budget'], (string) $r['custom_budget']);
+    if (!empty($r['downpayment'])) $summary['Downpayment'] = $r['downpayment'];
 
     return '
 <div style="background:#f4f4f2;padding:28px 12px;font-family:Arial,Helvetica,sans-serif;">

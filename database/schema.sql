@@ -47,6 +47,7 @@ CREATE TABLE IF NOT EXISTS `project_requests` (
   `deadline`      VARCHAR(120)    DEFAULT NULL,
   `budget`        VARCHAR(40)     DEFAULT NULL,
   `custom_budget` VARCHAR(120)    DEFAULT NULL,
+  `downpayment`   VARCHAR(120)    DEFAULT NULL,   -- client's proposed downpayment; owner can finalize it
   `name`          VARCHAR(120)    NOT NULL,
   `email`         VARCHAR(160)    NOT NULL,
   `phone`         VARCHAR(60)     DEFAULT NULL,
@@ -99,5 +100,14 @@ CREATE TABLE IF NOT EXISTS `app_settings` (
 
 INSERT INTO `app_settings` (`name`, `value`) VALUES ('agent_limit', '0')
   ON DUPLICATE KEY UPDATE `name` = `name`;
+
+-- Visitor activity: one row per unique visitor per day (deduped by a salted
+-- IP+day hash). Powers the contribution-graph heatmap on the landing page.
+CREATE TABLE IF NOT EXISTS `visits` (
+  `day`          DATE      NOT NULL,
+  `visitor_hash` CHAR(64)  NOT NULL,
+  `created_at`   TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`day`, `visitor_hash`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- No seed/dummy data. Tables start empty and fill from real activity.

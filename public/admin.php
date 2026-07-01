@@ -123,7 +123,7 @@ try {
         $stmt = $pdo->prepare(
             "SELECT pr.id, pr.reference, pr.path, pr.name, pr.email, pr.phone,
                     pr.business_name, pr.project_title, pr.service, pr.system_type,
-                    pr.budget, pr.custom_budget, pr.description,
+                    pr.budget, pr.custom_budget, pr.downpayment, pr.description,
                     pr.deal_amount, pr.deal_status, pr.commission_pct, pr.created_at,
                     pr.agent_id, a.name AS agent_name
              FROM project_requests pr
@@ -183,16 +183,26 @@ try {
             $pct = $maxPct;
         }
 
+        // Owner can finalize/adjust the client's proposed downpayment here.
+        $downpayment = field($body, 'downpayment', 120);
+
         $chk = $pdo->prepare("SELECT 1 FROM project_requests WHERE id = ? LIMIT 1");
         $chk->execute([$id]);
         if (!$chk->fetch()) {
             json_out(['error' => 'Request not found.'], 404);
         }
         $pdo->prepare(
-            "UPDATE project_requests SET deal_amount = ?, deal_status = ?, commission_pct = ? WHERE id = ?"
-        )->execute([$amount, $status, $pct, $id]);
+            "UPDATE project_requests
+                SET deal_amount = ?, deal_status = ?, commission_pct = ?, downpayment = ?
+              WHERE id = ?"
+        )->execute([$amount, $status, $pct, $downpayment !== '' ? $downpayment : null, $id]);
         $commission = ($status === 'won' && $amount) ? round($amount * $pct / 100, 2) : 0.0;
-        json_out(['ok' => true, 'commission' => $commission, 'commission_pct' => $pct]);
+        json_out([
+            'ok' => true,
+            'commission' => $commission,
+            'commission_pct' => $pct,
+            'downpayment' => $downpayment !== '' ? $downpayment : null,
+        ]);
     }
 
     // -------------------------------------------------------------- summary

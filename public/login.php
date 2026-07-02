@@ -21,7 +21,18 @@ try {
     $password = (string) ($body['password'] ?? '');
 
     $ipHash = hash('sha256', client_ip() . '|' . $config['ip_salt']);
-    ckx_login_guard($pdo, $ipHash); // brute-force throttle
+    ckx_login_guard($pdo, $ipHash); // per-IP brute-force throttle
+
+    // Per-account throttle (catches distributed brute force spread across IPs).
+    // Keyed on the email hash whether or not the account exists — no enumeration.
+    $acctKey = hash('sha256', 'login|' . strtolower($email) . '|' . $config['ip_salt']);
+    try {
+        if (ckx_rate_recent($pdo, 'login-fail', $acctKey, 900) >= 10) {
+            json_out(['error' => 'Too many login attempts. Please try again in a few minutes.'], 429);
+        }
+    } catch (Throwable $e) {
+        /* rate_hits table not present yet — skip the per-account guard */
+    }
 
     // 1) Admin (owner) account (DB-backed, falls back to .env).
     $admin = ckx_admin_account($pdo, $config['admin']);
@@ -31,6 +42,7 @@ try {
         && password_verify($password, $admin['password_hash'])
     ) {
         ckx_login_record($pdo, $ipHash, true);
+        ckx_rate_clear($pdo, 'login-fail', $acctKey);
         $token = ckx_issue_token($pdo, 'admin', 0); // sliding session (see CKX_SESSION_DAYS)
         json_out(['ok' => true, 'role' => 'admin', 'token' => $token]);
     }
@@ -47,12 +59,18 @@ try {
             json_out(['error' => 'This account is not active.'], 403);
         }
         ckx_login_record($pdo, $ipHash, true);
+        ckx_rate_clear($pdo, 'login-fail', $acctKey);
         $token = ckx_issue_token($pdo, 'agent', (int) $agent['id']);
         json_out(['ok' => true, 'role' => 'agent', 'token' => $token]);
     }
 
     // Generic message — never reveal which role an email belongs to.
     ckx_login_record($pdo, $ipHash, false);
+    try {
+        ckx_rate_add($pdo, 'login-fail', $acctKey);
+    } catch (Throwable $e) {
+        /* rate_hits table not present yet — ignore */
+    }
     json_out(['error' => 'Wrong email or password.'], 401);
 } catch (Throwable $e) {
     error_log('CKX login error: ' . $e->getMessage());

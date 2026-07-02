@@ -127,6 +127,56 @@ function ckx_login_record(PDO $pdo, string $ipHash, bool $success): void
     }
 }
 
+// -------------------------------------------------------------------------
+// Generic per-key sliding-window rate limiting (rate_hits table). $key is a
+// salted hash (an IP hash or an account hash); $windowSec is code-supplied.
+// -------------------------------------------------------------------------
+function ckx_rate_recent(PDO $pdo, string $bucket, string $key, int $windowSec): int
+{
+    $windowSec = (int) $windowSec; // inlined (trusted int) — placeholders aren't allowed in INTERVAL
+    $stmt = $pdo->prepare(
+        "SELECT COUNT(*) FROM rate_hits
+         WHERE bucket = ? AND key_hash = ?
+           AND created_at > (NOW() - INTERVAL $windowSec SECOND)"
+    );
+    $stmt->execute([$bucket, $key]);
+    return (int) $stmt->fetchColumn();
+}
+
+function ckx_rate_add(PDO $pdo, string $bucket, string $key): void
+{
+    $pdo->prepare("INSERT INTO rate_hits (bucket, key_hash) VALUES (?, ?)")
+        ->execute([$bucket, $key]);
+    if (random_int(1, 50) === 1) {
+        $pdo->query("DELETE FROM rate_hits WHERE created_at < (NOW() - INTERVAL 1 DAY)");
+    }
+}
+
+function ckx_rate_clear(PDO $pdo, string $bucket, string $key): void
+{
+    try {
+        $pdo->prepare("DELETE FROM rate_hits WHERE bucket = ? AND key_hash = ?")
+            ->execute([$bucket, $key]);
+    } catch (Throwable $e) {
+        /* table missing — ignore */
+    }
+}
+
+// Check-and-record: true if allowed (records the hit), false if over the limit.
+// Fails open so a public read never breaks over rate limiting / a missing table.
+function ckx_rate_limit(PDO $pdo, string $bucket, string $key, int $max, int $windowSec): bool
+{
+    try {
+        if (ckx_rate_recent($pdo, $bucket, $key, $windowSec) >= $max) {
+            return false;
+        }
+        ckx_rate_add($pdo, $bucket, $key);
+        return true;
+    } catch (Throwable $e) {
+        return true;
+    }
+}
+
 // A unique short referral code for a new agent.
 function ckx_make_ref_token(PDO $pdo): string
 {

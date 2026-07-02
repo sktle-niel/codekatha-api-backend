@@ -9,3 +9,8 @@
 Thumbs.db
 .idea/
 .vscode/
+
+# Uploaded progress images (keep the folder + its config, ignore the files)
+/public/uploads/*
+!/public/uploads/.gitkeep
+!/public/uploads/.htaccess

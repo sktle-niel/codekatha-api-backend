@@ -43,9 +43,32 @@ try {
         }
     }
 
-    json_out(['total' => $total, 'max' => $max, 'days' => (object) $days]);
+    // Days a project was completed (progress hit 100%) — drawn as a green mark.
+    // Isolated so a pre-migration DB (no completed_at column) still returns visits.
+    $completions = [];
+    try {
+        $cr = $pdo->query(
+            "SELECT DATE(completed_at) d, COUNT(*) c
+               FROM project_requests
+              WHERE completed_at IS NOT NULL
+                AND completed_at >= (CURDATE() - INTERVAL 371 DAY)
+              GROUP BY DATE(completed_at)"
+        )->fetchAll();
+        foreach ($cr as $row) {
+            $completions[$row['d']] = (int) $row['c'];
+        }
+    } catch (Throwable $e) {
+        // completed_at column not present yet — skip completions.
+    }
+
+    json_out([
+        'total'       => $total,
+        'max'         => $max,
+        'days'        => (object) $days,
+        'completions' => (object) $completions,
+    ]);
 } catch (Throwable $e) {
     error_log('CKX visits error: ' . $e->getMessage());
     // Never break the landing page over analytics — hand back an empty set.
-    json_out(['total' => 0, 'max' => 0, 'days' => (object) []], 200);
+    json_out(['total' => 0, 'max' => 0, 'days' => (object) [], 'completions' => (object) []], 200);
 }

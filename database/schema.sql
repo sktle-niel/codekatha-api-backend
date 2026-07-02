@@ -57,6 +57,11 @@ CREATE TABLE IF NOT EXISTS `project_requests` (
   `deal_amount`   DECIMAL(10,2)   DEFAULT NULL,
   `deal_status`   ENUM('lead','won','lost') NOT NULL DEFAULT 'lead',
   `commission_pct` TINYINT UNSIGNED NOT NULL DEFAULT 15,
+  `progress`      TINYINT UNSIGNED NOT NULL DEFAULT 0,   -- 0-100 % complete (client tracker)
+  `progress_note` VARCHAR(500)    DEFAULT NULL,          -- optional update note for the client
+  `notified_at`   TIMESTAMP       NULL DEFAULT NULL,     -- when the 90% email was sent
+  `completed_at`  TIMESTAMP       NULL DEFAULT NULL,     -- when progress first hit 100% (green heatmap mark)
+  `paid_at`       TIMESTAMP       NULL DEFAULT NULL,     -- when full payment was confirmed (receipt sent)
   `status`        ENUM('new','read','archived') NOT NULL DEFAULT 'new',
   `ip_hash`       CHAR(64)        DEFAULT NULL,
   `user_agent`    VARCHAR(255)    DEFAULT NULL,
@@ -66,6 +71,16 @@ CREATE TABLE IF NOT EXISTS `project_requests` (
   KEY `idx_status_created` (`status`, `created_at`),
   KEY `idx_ip_created` (`ip_hash`, `created_at`),
   KEY `idx_agent` (`agent_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- Progress photos for a project request (up to 5 each), shown on the tracker.
+CREATE TABLE IF NOT EXISTS `project_images` (
+  `id`         BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `request_id` BIGINT UNSIGNED NOT NULL,
+  `path`       VARCHAR(255)    NOT NULL,
+  `created_at` TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  KEY `idx_req` (`request_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- Login sessions for agents (and the admin) — opaque bearer tokens.
@@ -79,6 +94,16 @@ CREATE TABLE IF NOT EXISTS `sessions` (
   PRIMARY KEY (`id`),
   UNIQUE KEY `uq_token` (`token_hash`),
   KEY `idx_expires` (`expires_at`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- Generic rate-limit ledger (per-IP tracker throttle, per-account login throttle).
+CREATE TABLE IF NOT EXISTS `rate_hits` (
+  `id`         BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `bucket`     VARCHAR(32)     NOT NULL,
+  `key_hash`   CHAR(64)        NOT NULL,
+  `created_at` TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  KEY `idx_bucket_key_time` (`bucket`, `key_hash`, `created_at`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- Login throttle: one row per attempt, used to rate-limit by IP.

@@ -124,7 +124,8 @@ try {
             "SELECT pr.id, pr.reference, pr.path, pr.name, pr.email, pr.phone,
                     pr.business_name, pr.project_title, pr.service, pr.system_type,
                     pr.budget, pr.custom_budget, pr.downpayment, pr.description,
-                    pr.deal_amount, pr.deal_status, pr.commission_pct, pr.created_at,
+                    pr.deal_amount, pr.deal_status, pr.commission_pct,
+                    pr.progress, pr.progress_note, pr.notified_at, pr.paid_at, pr.created_at,
                     pr.agent_id, a.name AS agent_name
              FROM project_requests pr
              LEFT JOIN agents a ON a.id = pr.agent_id
@@ -134,6 +135,19 @@ try {
         );
         $stmt->execute($params);
         $rows = $stmt->fetchAll();
+
+        // Attach up to 5 progress images per request (one extra query, no N+1).
+        $imgMap = [];
+        $ids = array_column($rows, 'id');
+        if ($ids) {
+            $in = implode(',', array_fill(0, count($ids), '?'));
+            $im = $pdo->prepare("SELECT id, request_id, path FROM project_images WHERE request_id IN ($in) ORDER BY id");
+            $im->execute($ids);
+            foreach ($im->fetchAll() as $img) {
+                $imgMap[(int) $img['request_id']][] = ['id' => (int) $img['id'], 'url' => $img['path']];
+            }
+        }
+
         foreach ($rows as &$r) {
             $r['id'] = (int) $r['id'];
             $r['agent_id'] = $r['agent_id'] !== null ? (int) $r['agent_id'] : null;
@@ -142,6 +156,10 @@ try {
             $r['agent_commission'] =
                 ($r['deal_status'] === 'won' && $r['agent_id'] && $r['deal_amount'])
                     ? round($r['deal_amount'] * $r['commission_pct'] / 100, 2) : 0.0;
+            $r['progress'] = (int) $r['progress'];
+            $r['notified'] = $r['notified_at'] !== null;
+            $r['paid'] = $r['paid_at'] !== null;
+            $r['images'] = $imgMap[$r['id']] ?? [];
         }
         unset($r);
         json_out([
@@ -203,6 +221,171 @@ try {
             'commission_pct' => $pct,
             'downpayment' => $downpayment !== '' ? $downpayment : null,
         ]);
+    }
+
+    // ----------------------------------------------------- progress + note
+    if ($do === 'progress' && $method === 'POST') {
+        require_json();
+        require_allowed_origin($config['allowed_origins']);
+        $body = read_json_body();
+        $id = (int) ($body['id'] ?? 0);
+        $progress = max(0, min(100, (int) ($body['progress'] ?? 0)));
+        $note = mb_substr(clean_text(trim((string) ($body['note'] ?? ''))), 0, 500);
+
+        $chk = $pdo->prepare("SELECT id FROM project_requests WHERE id = ? LIMIT 1");
+        $chk->execute([$id]);
+        if (!$chk->fetch()) {
+            json_out(['error' => 'Request not found.'], 404);
+        }
+        // Stamp the completion date the first time we hit 100% (clear it if we
+        // drop back below) so the heatmap can mark that day green.
+        $pdo->prepare(
+            "UPDATE project_requests
+                SET progress = ?, progress_note = ?,
+                    completed_at = CASE WHEN ? >= 100 THEN COALESCE(completed_at, NOW()) ELSE NULL END
+              WHERE id = ?"
+        )->execute([$progress, $note !== '' ? $note : null, $progress, $id]);
+        json_out(['ok' => true, 'progress' => $progress]);
+    }
+
+    // -------------------------------------------------------- image upload
+    if ($do === 'image-upload' && $method === 'POST') {
+        require_allowed_origin($config['allowed_origins']); // multipart body, so not require_json
+        $id = (int) ($_POST['id'] ?? 0);
+
+        $chk = $pdo->prepare("SELECT id FROM project_requests WHERE id = ? LIMIT 1");
+        $chk->execute([$id]);
+        if (!$chk->fetch()) {
+            json_out(['error' => 'Request not found.'], 404);
+        }
+        $cnt = $pdo->prepare("SELECT COUNT(*) FROM project_images WHERE request_id = ?");
+        $cnt->execute([$id]);
+        if ((int) $cnt->fetchColumn() >= 5) {
+            json_out(['error' => 'You can upload up to 5 images per project.'], 422);
+        }
+        if (!isset($_FILES['image']) || $_FILES['image']['error'] !== UPLOAD_ERR_OK) {
+            json_out(['error' => 'No image was uploaded.'], 422);
+        }
+        $file = $_FILES['image'];
+        if ($file['size'] > 5 * 1024 * 1024) {
+            json_out(['error' => 'Image is too large (max 5 MB).'], 422);
+        }
+        $info  = @getimagesize($file['tmp_name']);
+        $types = ['image/jpeg' => 'jpg', 'image/png' => 'png', 'image/webp' => 'webp'];
+        $mime  = $info['mime'] ?? '';
+        if (!$info || !isset($types[$mime])) {
+            json_out(['error' => 'Only JPG, PNG, or WebP images are allowed.'], 422);
+        }
+        $name = bin2hex(random_bytes(16)) . '.' . $types[$mime];
+        $dir  = __DIR__ . '/uploads';
+        if (!is_dir($dir)) {
+            @mkdir($dir, 0755, true);
+        }
+        if (!move_uploaded_file($file['tmp_name'], $dir . '/' . $name)) {
+            json_out(['error' => 'Could not save the image. Please try again.'], 500);
+        }
+        $path = '/uploads/' . $name;
+        $pdo->prepare("INSERT INTO project_images (request_id, path) VALUES (?, ?)")
+            ->execute([$id, $path]);
+        json_out(['ok' => true, 'image' => ['id' => (int) $pdo->lastInsertId(), 'url' => $path]], 201);
+    }
+
+    // -------------------------------------------------------- image delete
+    if ($do === 'image-delete' && $method === 'POST') {
+        require_json();
+        require_allowed_origin($config['allowed_origins']);
+        $body = read_json_body();
+        $imgId = (int) ($body['image_id'] ?? 0);
+        $row = $pdo->prepare("SELECT path FROM project_images WHERE id = ? LIMIT 1");
+        $row->execute([$imgId]);
+        $img = $row->fetch();
+        if (!$img) {
+            json_out(['error' => 'Image not found.'], 404);
+        }
+        // path is "/uploads/xxx"; this file lives in public/, so __DIR__ . path resolves.
+        $onDisk = __DIR__ . $img['path'];
+        if (is_file($onDisk)) {
+            @unlink($onDisk);
+        }
+        $pdo->prepare("DELETE FROM project_images WHERE id = ?")->execute([$imgId]);
+        json_out(['ok' => true]);
+    }
+
+    // --------------------------------------------------- notify client (90%)
+    if ($do === 'notify' && $method === 'POST') {
+        require_json();
+        require_allowed_origin($config['allowed_origins']);
+        $body = read_json_body();
+        $id = (int) ($body['id'] ?? 0);
+        $stmt = $pdo->prepare("SELECT * FROM project_requests WHERE id = ? LIMIT 1");
+        $stmt->execute([$id]);
+        $req = $stmt->fetch();
+        if (!$req) {
+            json_out(['error' => 'Request not found.'], 404);
+        }
+        if ((int) $req['progress'] < 90) {
+            json_out(['error' => 'Reach at least 90% before notifying the client.'], 422);
+        }
+        $emailed = send_progress_notify($config['mail'], $config['site_url'], $req);
+        $pdo->prepare("UPDATE project_requests SET notified_at = NOW() WHERE id = ?")->execute([$id]);
+        json_out(['ok' => true, 'emailed' => $emailed]);
+    }
+
+    // ------------------------------------------- mark completed (+ receipt)
+    if ($do === 'complete' && $method === 'POST') {
+        require_json();
+        require_allowed_origin($config['allowed_origins']);
+        $body = read_json_body();
+        $id = (int) ($body['id'] ?? 0);
+        $paid = filter_var($body['paid'] ?? false, FILTER_VALIDATE_BOOLEAN);
+
+        $stmt = $pdo->prepare("SELECT * FROM project_requests WHERE id = ? LIMIT 1");
+        $stmt->execute([$id]);
+        $req = $stmt->fetch();
+        if (!$req) {
+            json_out(['error' => 'Request not found.'], 404);
+        }
+
+        // Final price: take an updated amount if sent, else what is on record.
+        $raw = $body['deal_amount'] ?? $req['deal_amount'];
+        if ($raw === null || $raw === '' || !is_numeric($raw)) {
+            json_out(['error' => 'Set the final price before completing.'], 422);
+        }
+        $amount = (float) $raw;
+        if ($amount <= 0 || $amount > 99999999) {
+            json_out(['error' => 'Please enter a valid final price.'], 422);
+        }
+
+        // Completed = won + 100% progress; stamp the completion + payment dates.
+        $pdo->prepare(
+            "UPDATE project_requests
+                SET deal_amount = ?, deal_status = 'won', progress = 100,
+                    completed_at = COALESCE(completed_at, NOW()),
+                    paid_at = CASE WHEN ? THEN COALESCE(paid_at, NOW()) ELSE paid_at END
+              WHERE id = ?"
+        )->execute([$amount, $paid ? 1 : 0, $id]);
+
+        // Re-read so the receipt reflects the new amount + paid stamp.
+        $stmt->execute([$id]);
+        $emailed = send_receipt($config['mail'], $stmt->fetch());
+
+        json_out(['ok' => true, 'emailed' => $emailed]);
+    }
+
+    // ------------------------------------------------------- resend receipt
+    if ($do === 'resend-receipt' && $method === 'POST') {
+        require_json();
+        require_allowed_origin($config['allowed_origins']);
+        $body = read_json_body();
+        $id = (int) ($body['id'] ?? 0);
+        $stmt = $pdo->prepare("SELECT * FROM project_requests WHERE id = ? LIMIT 1");
+        $stmt->execute([$id]);
+        $req = $stmt->fetch();
+        if (!$req) {
+            json_out(['error' => 'Request not found.'], 404);
+        }
+        $emailed = send_receipt($config['mail'], $req);
+        json_out(['ok' => true, 'emailed' => $emailed]);
     }
 
     // -------------------------------------------------------------- summary

@@ -39,6 +39,13 @@ function budget_label(string $id, string $custom): string
     return $map[$id] ?? ($id !== '' ? $id : '—');
 }
 
+// Format a downpayment for display: "2000" -> "PHP 2,000".
+function dp_label(string $v): string
+{
+    $v = trim($v);
+    return $v !== '' && ctype_digit($v) ? 'PHP ' . number_format((int) $v) : $v;
+}
+
 function system_label(string $id): string
 {
     return [
@@ -81,7 +88,7 @@ function request_rows(array $r): array
     }
 
     $rows['Budget'] = budget_label((string) $r['budget'], (string) $r['custom_budget']);
-    if (!empty($r['downpayment'])) $rows['Downpayment'] = $r['downpayment'];
+    if (!empty($r['downpayment'])) $rows['Downpayment'] = dp_label((string) $r['downpayment']);
     $rows['Name']   = $r['name'];
     $rows['Email']  = $r['email'];
     if (!empty($r['phone'])) $rows['Phone'] = $r['phone'];
@@ -122,7 +129,7 @@ function build_email_html(array $r): string
         if (!empty($r['has_existing']))  $project['Existing website'] = $r['has_existing'];
     }
     $project['Budget'] = budget_label((string) $r['budget'], (string) $r['custom_budget']);
-    if (!empty($r['downpayment'])) $project['Downpayment'] = $r['downpayment'];
+    if (!empty($r['downpayment'])) $project['Downpayment'] = dp_label((string) $r['downpayment']);
 
     $contact = ['Name' => $r['name'], 'Email' => $r['email']];
     if (!empty($r['phone'])) $contact['Phone / Messenger'] = $r['phone'];
@@ -272,7 +279,7 @@ function build_client_html(array $r): string
         if (!empty($r['business_name'])) $summary['Business'] = $r['business_name'];
     }
     $summary['Budget'] = budget_label((string) $r['budget'], (string) $r['custom_budget']);
-    if (!empty($r['downpayment'])) $summary['Downpayment'] = $r['downpayment'];
+    if (!empty($r['downpayment'])) $summary['Downpayment'] = dp_label((string) $r['downpayment']);
 
     return '
 <div style="background:#f4f4f2;padding:28px 12px;font-family:Arial,Helvetica,sans-serif;">
@@ -359,6 +366,196 @@ function send_client_confirmation(array $mail, array $r): bool
         return true;
     } catch (Throwable $e) {
         error_log('CKX client confirm failed: ' . $e->getMessage());
+        return false;
+    }
+}
+
+// Tell a client their project is ~90% done and to get ready for payment.
+function send_progress_notify(array $mail, string $siteUrl, array $r): bool
+{
+    if (empty($mail['enabled']) || $mail['user'] === '' || $mail['pass'] === '') {
+        return false;
+    }
+    if (empty($r['email']) || !filter_var($r['email'], FILTER_VALIDATE_EMAIL)) {
+        return false;
+    }
+
+    $firstName = htmlspecialchars(strtok((string) $r['name'], ' ') ?: 'there');
+    $ref       = htmlspecialchars((string) $r['reference']);
+    $progress  = (int) $r['progress'];
+    $title     = htmlspecialchars($r['business_name'] ?: ($r['project_title'] ?: 'your project'));
+    $trackUrl  = htmlspecialchars($siteUrl . '/track?ref=' . rawurlencode((string) $r['reference']));
+
+    $html = '
+<div style="background:#f4f4f2;padding:28px 12px;font-family:Arial,Helvetica,sans-serif;">
+  <table role="presentation" align="center" width="600" cellpadding="0" cellspacing="0"
+         style="max-width:600px;width:100%;background:#fff;border:1px solid #eceae5;border-radius:14px;border-collapse:separate;overflow:hidden;">
+    <tr><td style="background:#18181b;padding:20px 28px;">
+      <span style="font-size:17px;font-weight:800;color:#fff;">CODEKATHA<span style="color:#c2f000;">X</span></span>
+    </td></tr>
+    <tr><td style="padding:28px 28px 0;">
+      <h1 style="margin:0 0 10px;color:#18181b;font-size:22px;">Almost there, ' . $firstName . '!</h1>
+      <p style="margin:0;color:#3f3f46;font-size:15px;line-height:1.7;">
+        Great news — <strong>' . $title . '</strong> is now about <strong>' . $progress . '% complete</strong>.
+        We are on the final stretch, so please <strong>get ready for payment</strong> as we wrap things up.
+      </p>
+    </td></tr>
+    <tr><td style="padding:20px 28px 0;">
+      <table role="presentation" width="100%" style="background:#f7f6f3;border:1px solid #eceae5;border-radius:10px;">
+        <tr><td style="padding:14px 18px;">
+          <span style="color:#6f6f6a;font-size:12px;">Progress</span><br>
+          <span style="color:#18181b;font-size:20px;font-weight:800;">' . $progress . '%</span>
+          <span style="color:#6f6f6a;font-size:12px;"> &middot; Reference ' . $ref . '</span>
+        </td></tr>
+      </table>
+    </td></tr>
+    <tr><td style="padding:22px 28px 28px;">
+      <a href="' . $trackUrl . '" style="display:inline-block;background:#18181b;color:#fff;text-decoration:none;font-size:14px;font-weight:600;padding:11px 22px;border-radius:6px;">View your project</a>
+      <p style="margin:16px 0 0;color:#6f6f6a;font-size:13px;line-height:1.6;">
+        Reply to this email anytime if you have questions about payment or the final details.
+      </p>
+    </td></tr>
+    <tr><td style="background:#f7f6f3;border-top:1px solid #eceae5;padding:14px 28px;color:#9a9a96;font-size:11px;">
+      CODEKATHAX &middot; Project Update
+    </td></tr>
+  </table>
+</div>';
+
+    $text = "Almost there, $firstName!\n\n"
+        . "Your project is now about {$progress}% complete. We are on the final stretch, "
+        . "so please get ready for payment as we wrap things up.\n\n"
+        . "Reference: " . $r['reference'] . "\n"
+        . "Track it: " . $siteUrl . '/track?ref=' . rawurlencode((string) $r['reference']) . "\n\n"
+        . "Reply to this email anytime.\n\n— The CODEKATHAX Team";
+
+    $mailer = ckx_smtp_mailer($mail);
+    try {
+        $mailer->addAddress($r['email'], $r['name'] !== '' ? $r['name'] : $r['email']);
+        $mailer->addReplyTo($mail['to'], $mail['from_name']);
+        $mailer->Subject = 'Your project is almost ready — ' . $r['reference'] . ' · CODEKATHAX';
+        $mailer->isHTML(true);
+        $mailer->Body    = $html;
+        $mailer->AltBody = $text;
+        $mailer->send();
+        return true;
+    } catch (Throwable $e) {
+        error_log('CKX progress notify failed: ' . $e->getMessage());
+        return false;
+    }
+}
+
+// Send the client a clean payment receipt once a project is marked completed.
+function send_receipt(array $mail, array $r): bool
+{
+    if (empty($mail['enabled']) || $mail['user'] === '' || $mail['pass'] === '') {
+        return false;
+    }
+    if (empty($r['email']) || !filter_var($r['email'], FILTER_VALIDATE_EMAIL)) {
+        return false;
+    }
+
+    $amount = (float) ($r['deal_amount'] ?? 0);
+    $money  = 'PHP ' . number_format($amount, 2);
+    $ref    = htmlspecialchars((string) $r['reference']);
+    $name   = htmlspecialchars((string) $r['name']);
+    $email  = htmlspecialchars((string) $r['email']);
+    $title  = htmlspecialchars(
+        $r['business_name'] ?: ($r['project_title'] ?: 'Custom software project')
+    );
+    $tz     = new DateTimeZone('Asia/Manila');
+    $datePaid = (new DateTime('now', $tz))->format('M j, Y');
+
+    $html = '
+<div style="background:#f4f4f2;padding:28px 12px;font-family:Arial,Helvetica,sans-serif;">
+  <table role="presentation" align="center" width="600" cellpadding="0" cellspacing="0"
+         style="max-width:600px;width:100%;background:#fff;border:1px solid #eceae5;border-radius:14px;border-collapse:separate;overflow:hidden;">
+    <tr><td style="background:#18181b;padding:20px 28px;">
+      <table role="presentation" width="100%"><tr>
+        <td style="font-size:17px;font-weight:800;color:#fff;">CODEKATHA<span style="color:#c2f000;">X</span></td>
+        <td align="right" style="color:#9a9a96;font-size:11px;letter-spacing:1.5px;text-transform:uppercase;">Receipt</td>
+      </tr></table>
+    </td></tr>
+
+    <tr><td style="padding:28px 28px 0;">
+      <table role="presentation" width="100%"><tr>
+        <td style="vertical-align:top;">
+          <span style="color:#6f6f6a;font-size:13px;">Amount paid</span><br>
+          <span style="color:#18181b;font-size:30px;font-weight:800;letter-spacing:-0.5px;">' . $money . '</span>
+        </td>
+        <td align="right" style="vertical-align:top;">
+          <span style="display:inline-block;background:#eef4e8;color:#2f6b33;font-size:12px;font-weight:700;letter-spacing:0.5px;padding:6px 12px;border-radius:999px;">PAID IN FULL</span>
+        </td>
+      </tr></table>
+    </td></tr>
+
+    <tr><td style="padding:22px 28px 0;">
+      <table role="presentation" width="100%" style="background:#f7f6f3;border:1px solid #eceae5;border-radius:10px;">
+        <tr>
+          <td style="padding:12px 16px;border-right:1px solid #eceae5;">
+            <span style="color:#6f6f6a;font-size:12px;">Receipt no.</span><br>
+            <span style="color:#18181b;font-size:14px;font-weight:700;">' . $ref . '</span>
+          </td>
+          <td style="padding:12px 16px;">
+            <span style="color:#6f6f6a;font-size:12px;">Date paid</span><br>
+            <span style="color:#18181b;font-size:14px;font-weight:700;">' . htmlspecialchars($datePaid) . '</span>
+          </td>
+        </tr>
+      </table>
+    </td></tr>
+
+    <tr><td style="padding:22px 28px 0;">
+      <p style="margin:0 0 6px;color:#9a9a96;font-size:11px;letter-spacing:1.5px;text-transform:uppercase;">Billed to</p>
+      <p style="margin:0;color:#18181b;font-size:14px;font-weight:600;">' . $name . '</p>
+      <p style="margin:0;color:#6f6f6a;font-size:13px;">' . $email . '</p>
+    </td></tr>
+
+    <tr><td style="padding:20px 28px 0;">
+      <table role="presentation" width="100%" style="border-collapse:collapse;">
+        <tr>
+          <td style="padding:12px 0;border-top:1px solid #efeee9;border-bottom:1px solid #efeee9;color:#18181b;font-size:14px;font-weight:600;">' . $title . '</td>
+          <td align="right" style="padding:12px 0;border-top:1px solid #efeee9;border-bottom:1px solid #efeee9;color:#18181b;font-size:14px;font-weight:600;">' . $money . '</td>
+        </tr>
+        <tr>
+          <td style="padding:14px 0 0;color:#18181b;font-size:15px;font-weight:800;">Total paid</td>
+          <td align="right" style="padding:14px 0 0;color:#18181b;font-size:15px;font-weight:800;">' . $money . '</td>
+        </tr>
+      </table>
+    </td></tr>
+
+    <tr><td style="padding:22px 28px 28px;">
+      <p style="margin:0;color:#3f3f46;font-size:14px;line-height:1.7;">
+        Thank you, ' . htmlspecialchars(strtok((string) $r['name'], ' ') ?: 'there') . '! Your payment has been received in full and your project is complete. Reply to this email anytime if you need anything else.
+      </p>
+    </td></tr>
+
+    <tr><td style="background:#f7f6f3;border-top:1px solid #eceae5;padding:14px 28px;color:#9a9a96;font-size:11px;">
+      CODEKATHAX &middot; Web &amp; App Services &middot; This receipt was generated automatically.
+    </td></tr>
+  </table>
+</div>';
+
+    $text = "CODEKATHAX - Receipt\n\n"
+        . "Amount paid: $money (PAID IN FULL)\n"
+        . "Receipt no.: " . $r['reference'] . "\n"
+        . "Date paid: $datePaid\n\n"
+        . "Billed to: " . $r['name'] . " (" . $r['email'] . ")\n\n"
+        . "Item: " . ($r['business_name'] ?: ($r['project_title'] ?: 'Custom software project')) . "\n"
+        . "Total paid: $money\n\n"
+        . "Thank you! Your payment has been received in full and your project is complete.\n\n"
+        . "- The CODEKATHAX Team";
+
+    $mailer = ckx_smtp_mailer($mail);
+    try {
+        $mailer->addAddress($r['email'], $r['name'] !== '' ? $r['name'] : $r['email']);
+        $mailer->addReplyTo($mail['to'], $mail['from_name']);
+        $mailer->Subject = 'Receipt for your project - ' . $r['reference'] . ' - CODEKATHAX';
+        $mailer->isHTML(true);
+        $mailer->Body    = $html;
+        $mailer->AltBody = $text;
+        $mailer->send();
+        return true;
+    } catch (Throwable $e) {
+        error_log('CKX receipt mail failed: ' . $e->getMessage());
         return false;
     }
 }

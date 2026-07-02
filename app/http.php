@@ -29,6 +29,13 @@ function security_headers(): void
     header('X-Frame-Options: DENY');
     header('Referrer-Policy: no-referrer');
     header('Cross-Origin-Opener-Policy: same-origin');
+
+    // HSTS — only meaningful over HTTPS (browsers ignore it on plain HTTP).
+    $https = (($_SERVER['HTTPS'] ?? '') !== '' && ($_SERVER['HTTPS'] ?? '') !== 'off')
+        || (($_SERVER['HTTP_X_FORWARDED_PROTO'] ?? '') === 'https');
+    if ($https) {
+        header('Strict-Transport-Security: max-age=31536000; includeSubDomains');
+    }
 }
 
 // Require a JSON request body. A cross-site HTML <form> cannot send
